@@ -174,12 +174,14 @@ class JointControlGUI(Node):
             pass
 
     def state_callback(self, msg: JointState):
-        # 打印接收到的消息信息
-        self.get_logger().info(f'收到关节状态: {len(msg.position)}个关节, 位置={[f"{math.degrees(p):.1f}" for p in msg.position[:5]]}...')
         """更新当前状态显示"""
-        if len(msg.position) == 19:
-            self.current_positions = list(msg.position)
+        if len(msg.position) > 0:
+            # 更新收到的关节位置
+            for i, pos in enumerate(msg.position):
+                if i < 19:
+                    self.current_positions[i] = pos
             self.has_received_state = True
+
             # 更新实时值标签
             for idx, rt_label in self.realtime_labels:
                 deg_val = math.degrees(self.current_positions[idx])
