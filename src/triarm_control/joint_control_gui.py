@@ -41,7 +41,7 @@ class JointControlGUI(Node):
         self.publish_rate = self.get_parameter('publish_rate').value  # Hz
 
         # 话题名称（支持namespace）
-        cmd_topic = f'{ns}/joint_commands' if ns else '/joint_commands'
+        cmd_topic = f'{ns}/joint_command' if ns else '/joint_command'
         state_topic = f'{ns}/joint_states' if ns else '/joint_states'
 
         # 发布者

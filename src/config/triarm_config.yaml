@@ -2,7 +2,7 @@
 
 triarm_joint_control_gui:
   ros__parameters:
-    namespace: ""
+    namespace: "robot"
     gui_width: 700
     gui_height: 500
     joint_velocity: 30.0  # 关节运动速度 (度/秒)
