@@ -204,8 +204,9 @@ class JointControlGUI(Node):
             except ValueError:
                 pass
 
-        # 初始化指令位置为当前实时位置
-        self.cmd_positions = list(self.current_positions)
+        # 如果正在运动中，从当前指令位置继续；否则从实时位置开始
+        if not self.is_moving:
+            self.cmd_positions = list(self.current_positions)
         self.is_moving = True
         self.status_label.config(text='运动中...', foreground='orange')
 
