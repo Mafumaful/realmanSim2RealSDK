@@ -102,22 +102,41 @@ class JointControlGUI(Node):
         self.status_label = ttk.Label(btn_frame, text='就绪', foreground='green')
         self.status_label.pack(side='right', padx=10)
 
+    def _add_header_row(self, parent):
+        """添加表头行"""
+        ttk.Label(parent, text='关节', width=4, font=('', 9, 'bold')).grid(
+            row=0, column=0, padx=2, pady=5)
+        ttk.Label(parent, text='实时值', width=8, foreground='blue', font=('', 9, 'bold')).grid(
+            row=0, column=1, padx=2, pady=5)
+        ttk.Label(parent, text='指令值', width=8, foreground='green', font=('', 9, 'bold')).grid(
+            row=0, column=2, padx=2, pady=5)
+        ttk.Label(parent, text='滑块控制', width=20, font=('', 9, 'bold')).grid(
+            row=0, column=3, padx=2, pady=5)
+        ttk.Label(parent, text='目标角度', width=8, font=('', 9, 'bold')).grid(
+            row=0, column=4, padx=2, pady=5)
+
     def _create_platform_tab(self, notebook):
         """创建平台标签页"""
         frame = ttk.Frame(notebook)
         notebook.add(frame, text='平台')
+
+        # 添加表头
+        self._add_header_row(frame)
 
         name = JOINT_NAMES_LIST[0]
         limits = JOINT_LIMITS[name]
         min_deg = math.degrees(limits[0])
         max_deg = math.degrees(limits[1])
 
-        self._add_joint_row(frame, 0, 'D1', min_deg, max_deg, 0)
+        self._add_joint_row(frame, 1, 'D1', min_deg, max_deg, 0)
 
     def _create_arm_tab(self, notebook, arm_name, start_idx):
         """创建机械臂标签页"""
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=f'机械臂{arm_name}')
+
+        # 添加表头
+        self._add_header_row(frame)
 
         for i in range(6):
             idx = start_idx + i
@@ -126,7 +145,7 @@ class JointControlGUI(Node):
             min_deg = math.degrees(limits[0])
             max_deg = math.degrees(limits[1])
             label = f'{arm_name}{i+1}'
-            self._add_joint_row(frame, i, label, min_deg, max_deg, idx)
+            self._add_joint_row(frame, i+1, label, min_deg, max_deg, idx)
 
     def _add_joint_row(self, parent, row, label, min_val, max_val, idx):
         """添加关节控制行"""
