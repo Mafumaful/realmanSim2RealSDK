@@ -176,11 +176,12 @@ class JointControlGUI(Node):
 
     def state_callback(self, msg: JointState):
         """更新当前状态显示"""
-        if len(msg.position) > 0:
-            # 更新收到的关节位置
-            for i, pos in enumerate(msg.position):
-                if i < 19:
-                    self.current_positions[i] = pos
+        if len(msg.position) > 0 and len(msg.name) > 0:
+            # 按关节名称匹配更新位置（避免顺序错乱）
+            for i, joint_name in enumerate(msg.name):
+                if i < len(msg.position) and joint_name in JOINT_NAMES_LIST:
+                    idx = JOINT_NAMES_LIST.index(joint_name)
+                    self.current_positions[idx] = msg.position[i]
             self.has_received_state = True
 
             # 更新实时值标签
