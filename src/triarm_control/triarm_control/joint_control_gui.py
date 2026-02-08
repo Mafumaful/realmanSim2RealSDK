@@ -57,6 +57,7 @@ class JointControlGUI(Node):
         self.cmd_positions = [0.0] * 19      # 插值指令位置 (弧度)
         self.is_moving = False               # 是否正在运动
         self.has_received_state = False      # 是否已收到实时数据
+        self.is_initialized = False          # 是否已初始化cmd_positions
 
         # GUI 组件
         self.entries = []          # 输入框
@@ -204,10 +205,12 @@ class JointControlGUI(Node):
             except ValueError:
                 pass
 
-        # 如果正在运动中，从当前指令位置继续；否则从实时位置开始
-        if not self.is_moving:
+        # 只在第一次初始化时从实时位置开始
+        if not self.is_initialized:
             self.cmd_positions = list(self.current_positions)
-            self.get_logger().info(f'从实时位置开始: {[f"{math.degrees(p):.1f}" for p in self.cmd_positions[:5]]}...')
+            self.is_initialized = True
+            self.get_logger().info(f'初始化位置: {[f"{math.degrees(p):.1f}" for p in self.cmd_positions[:5]]}...')
+
         self.is_moving = True
         self.status_label.config(text='运动中...', foreground='orange')
 
