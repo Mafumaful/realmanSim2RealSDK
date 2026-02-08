@@ -5,3 +5,5 @@ triarm_joint_control_gui:
     namespace: ""
     gui_width: 700
     gui_height: 500
+    joint_velocity: 30.0  # 关节运动速度 (度/秒)
+    publish_rate: 50.0    # 指令发布频率 (Hz)
