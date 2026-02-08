@@ -174,6 +174,8 @@ class JointControlGUI(Node):
             pass
 
     def state_callback(self, msg: JointState):
+        # 打印接收到的消息信息
+        self.get_logger().info(f'收到关节状态: {len(msg.position)}个关节, 位置={[f"{math.degrees(p):.1f}" for p in msg.position[:5]]}...')
         """更新当前状态显示"""
         if len(msg.position) == 19:
             self.current_positions = list(msg.position)
