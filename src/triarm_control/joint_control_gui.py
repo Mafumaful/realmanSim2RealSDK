@@ -26,18 +26,31 @@ class JointControlGUI(Node):
     def __init__(self):
         super().__init__('triarm_joint_control_gui')
 
+        # 声明参数
+        self.declare_parameter('namespace', '')
+        self.declare_parameter('gui_width', 700)
+        self.declare_parameter('gui_height', 500)
+
+        # 获取参数
+        ns = self.get_parameter('namespace').value
+        self.gui_width = self.get_parameter('gui_width').value
+        self.gui_height = self.get_parameter('gui_height').value
+
+        # 话题名称（支持namespace）
+        cmd_topic = f'{ns}/joint_commands' if ns else '/joint_commands'
+        state_topic = f'{ns}/joint_states' if ns else '/joint_states'
+
         # 发布者
-        self.publisher = self.create_publisher(
-            JointState, '/joint_commands', 10)
+        self.publisher = self.create_publisher(JointState, cmd_topic, 10)
 
         # 订阅当前状态
         self.subscription = self.create_subscription(
-            JointState, '/joint_states', self.state_callback, 10)
+            JointState, state_topic, self.state_callback, 10)
 
         self.current_positions = [0.0] * 19
         self.sliders = []
-        self.value_labels = []      # 滑块值标签
-        self.realtime_labels = []   # 实时值标签
+        self.value_labels = []
+        self.realtime_labels = []
 
         self._create_gui()
 
@@ -45,7 +58,7 @@ class JointControlGUI(Node):
         """创建GUI界面"""
         self.root = tk.Tk()
         self.root.title('三臂机器人关节控制')
-        self.root.geometry('900x750')
+        self.root.geometry(f'{self.gui_width}x{self.gui_height}')
 
         # 创建notebook用于分组
         notebook = ttk.Notebook(self.root)
