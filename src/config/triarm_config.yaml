@@ -2,6 +2,6 @@
 
 triarm_joint_control_gui:
   ros__parameters:
-    namespace: ""
+    namespace: "robot"
     gui_width: 700
     gui_height: 500

@@ -37,7 +37,7 @@ class JointControlGUI(Node):
         self.gui_height = self.get_parameter('gui_height').value
 
         # 话题名称（支持namespace）
-        cmd_topic = f'{ns}/joint_commands' if ns else '/joint_commands'
+        cmd_topic = f'{ns}/joint_command' if ns else '/joint_command'
         state_topic = f'{ns}/joint_states' if ns else '/joint_states'
 
         # 发布者
