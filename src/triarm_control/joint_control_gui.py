@@ -56,10 +56,13 @@ class JointControlGUI(Node):
         self.target_positions = [0.0] * 19   # 目标位置 (弧度)
         self.cmd_positions = [0.0] * 19      # 插值指令位置 (弧度)
         self.is_moving = False               # 是否正在运动
+        self.has_received_state = False      # 是否已收到实时数据
 
         # GUI 组件
         self.entries = []          # 输入框
-        self.realtime_labels = []  # 实时值标签
+        self.sliders = []          # 滑块
+        self.realtime_labels = []  # 实时值标签 (来自Isaac Sim)
+        self.cmd_labels = []       # 被控量标签 (发送的指令)
 
         self._create_gui()
 
@@ -127,29 +130,54 @@ class JointControlGUI(Node):
     def _add_joint_row(self, parent, row, label, min_val, max_val, idx):
         """添加关节控制行"""
         # 关节名称
-        ttk.Label(parent, text=label, width=6).grid(
-            row=row, column=0, padx=3, pady=3)
+        ttk.Label(parent, text=label, width=4).grid(
+            row=row, column=0, padx=2, pady=2)
 
         # 实时值显示 (来自Isaac Sim)
-        rt_label = ttk.Label(parent, text='--', width=10, foreground='blue')
-        rt_label.grid(row=row, column=1, padx=3, pady=3)
+        rt_label = ttk.Label(parent, text='--', width=8, foreground='blue')
+        rt_label.grid(row=row, column=1, padx=2, pady=2)
         self.realtime_labels.append((idx, rt_label))
 
+        # 被控量显示 (发送的指令)
+        cmd_label = ttk.Label(parent, text='--', width=8, foreground='green')
+        cmd_label.grid(row=row, column=2, padx=2, pady=2)
+        self.cmd_labels.append((idx, cmd_label))
+
+        # 滑块
+        var = tk.DoubleVar(value=0.0)
+        slider = ttk.Scale(parent, from_=min_val, to=max_val,
+                           variable=var, length=200)
+        slider.grid(row=row, column=3, padx=2, pady=2)
+        self.sliders.append((idx, var, min_val, max_val))
+
         # 目标角度输入框
-        entry = ttk.Entry(parent, width=10)
+        entry = ttk.Entry(parent, width=8)
         entry.insert(0, '0.0')
-        entry.grid(row=row, column=2, padx=3, pady=3)
-
-        # 限位提示
-        ttk.Label(parent, text=f'[{min_val:.1f}, {max_val:.1f}]',
-                  width=16, foreground='gray').grid(row=row, column=3, padx=3, pady=3)
-
+        entry.grid(row=row, column=4, padx=2, pady=2)
         self.entries.append((idx, entry, min_val, max_val))
+
+        # 滑块和输入框双向同步
+        var.trace_add('write', lambda *_, v=var, e=entry: self._sync_entry(v, e))
+        entry.bind('<Return>', lambda ev, v=var, e=entry: self._sync_slider(v, e))
+
+    def _sync_entry(self, var, entry):
+        """滑块变化时同步到输入框"""
+        entry.delete(0, tk.END)
+        entry.insert(0, f'{var.get():.1f}')
+
+    def _sync_slider(self, var, entry):
+        """输入框回车时同步到滑块"""
+        try:
+            val = float(entry.get())
+            var.set(val)
+        except ValueError:
+            pass
 
     def state_callback(self, msg: JointState):
         """更新当前状态显示"""
         if len(msg.position) == 19:
             self.current_positions = list(msg.position)
+            self.has_received_state = True
             # 更新实时值标签
             for idx, rt_label in self.realtime_labels:
                 deg_val = math.degrees(self.current_positions[idx])
@@ -157,6 +185,12 @@ class JointControlGUI(Node):
 
     def start_motion(self):
         """开始运动"""
+        # 检查是否已收到实时数据
+        if not self.has_received_state:
+            self.status_label.config(text='等待实时数据...', foreground='red')
+            self.get_logger().warn('尚未收到关节状态数据')
+            return
+
         # 读取输入框中的目标角度
         for idx, entry, min_val, max_val in self.entries:
             try:
@@ -166,7 +200,7 @@ class JointControlGUI(Node):
             except ValueError:
                 pass
 
-        # 初始化指令位置为当前位置
+        # 初始化指令位置为当前实时位置
         self.cmd_positions = list(self.current_positions)
         self.is_moving = True
         self.status_label.config(text='运动中...', foreground='orange')
@@ -218,6 +252,11 @@ class JointControlGUI(Node):
         msg.name = JOINT_NAMES_LIST
         msg.position = list(self.cmd_positions)
         self.publisher.publish(msg)
+
+        # 更新被控量显示
+        for idx, cmd_label in self.cmd_labels:
+            deg_val = math.degrees(self.cmd_positions[idx])
+            cmd_label.config(text=f'{deg_val:.1f}°')
 
     def run(self):
         """运行GUI主循环"""
