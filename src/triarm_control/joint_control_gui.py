@@ -207,6 +207,7 @@ class JointControlGUI(Node):
         # 如果正在运动中，从当前指令位置继续；否则从实时位置开始
         if not self.is_moving:
             self.cmd_positions = list(self.current_positions)
+            self.get_logger().info(f'从实时位置开始: {[f"{math.degrees(p):.1f}" for p in self.cmd_positions[:5]]}...')
         self.is_moving = True
         self.status_label.config(text='运动中...', foreground='orange')
 
