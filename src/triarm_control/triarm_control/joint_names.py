@@ -45,7 +45,7 @@ JOINT_LIMITS = {
     'joint_platform_A5': (deg2rad(-126), deg2rad(126)),
     'joint_platform_A6': (deg2rad(-355), deg2rad(355)),
     # 机械臂B
-    'joint_platform_B1': (deg2rad(-177.6), deg2rad(177.6)),
+    'joint_platform_B1': (deg2rad(-180), deg2rad(180)),
     'joint_platform_B2': (deg2rad(-129.5), deg2rad(129.5)),
     'joint_platform_B3': (deg2rad(-129.5), deg2rad(129.5)),
     'joint_platform_B4': (deg2rad(-180), deg2rad(180)),
