@@ -1,9 +1,13 @@
 # 三臂机器人控制配置
 
-triarm_joint_control_gui:
+triarm_controller:
+  ros__parameters:
+    namespace: "robot"
+    joint_velocity: 30.0  # 关节运动速度 (度/秒)
+    publish_rate: 50.0    # 指令发布频率 (Hz)
+
+triarm_gui:
   ros__parameters:
     namespace: "robot"
     gui_width: 700
     gui_height: 500
-    joint_velocity: 30.0  # 关节运动速度 (度/秒)
-    publish_rate: 50.0    # 指令发布频率 (Hz)
