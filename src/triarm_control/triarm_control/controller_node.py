@@ -26,17 +26,26 @@ class TriarmControllerNode(Node):
         self.declare_parameter('namespace', '')
         self.declare_parameter('joint_velocity', 30.0)
         self.declare_parameter('publish_rate', 50.0)
+        self.declare_parameter('enable_smooth', True)
+        self.declare_parameter('acceleration', 100.0)
+        self.declare_parameter('velocity_mode', 'normal')
 
         # 获取参数
         ns = self.get_parameter('namespace').value
         velocity = self.get_parameter('joint_velocity').value
         rate = self.get_parameter('publish_rate').value
+        enable_smooth = self.get_parameter('enable_smooth').value
+        acceleration = self.get_parameter('acceleration').value
+        velocity_mode = self.get_parameter('velocity_mode').value
 
         # 创建控制器
         self.controller = ArmController(
             joint_velocity=velocity,
-            publish_rate=rate
+            publish_rate=rate,
+            enable_smooth=enable_smooth,
+            acceleration=acceleration
         )
+        self.controller.set_velocity_mode(velocity_mode)
         self.controller.set_command_callback(self._on_command)
         self.controller.set_motion_complete_callback(self._on_complete)
 
@@ -56,6 +65,13 @@ class TriarmControllerNode(Node):
         # 矩阵输入话题
         self.target_sub = self.create_subscription(
             Float64MultiArray, target_topic, self._target_callback, 10)
+
+        # 控制参数话题
+        from std_msgs.msg import Bool, String
+        self.smooth_sub = self.create_subscription(
+            Bool, f'{prefix}enable_smooth', self._smooth_callback, 10)
+        self.velocity_mode_sub = self.create_subscription(
+            String, f'{prefix}velocity_mode', self._velocity_mode_callback, 10)
 
         # 定时器
         period = 1.0 / rate
@@ -85,6 +101,17 @@ class TriarmControllerNode(Node):
             self.get_logger().info('收到目标位置，开始运动')
         else:
             self.get_logger().warn('等待关节状态数据...')
+
+    def _smooth_callback(self, msg):
+        """处理平滑处理开关"""
+        self.controller.set_smooth_enabled(msg.data)
+        status = "启用" if msg.data else "禁用"
+        self.get_logger().info(f'平滑处理已{status}')
+
+    def _velocity_mode_callback(self, msg):
+        """处理速度模式变化"""
+        self.controller.set_velocity_mode(msg.data)
+        self.get_logger().info(f'速度模式: {msg.data}')
 
     def _timer_callback(self):
         """定时执行控制步进"""

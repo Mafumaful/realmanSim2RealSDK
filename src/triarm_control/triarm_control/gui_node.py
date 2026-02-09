@@ -53,6 +53,11 @@ class JointControlGUI(Node):
         # 发布目标位置
         self.target_pub = self.create_publisher(Float64MultiArray, target_topic, 10)
 
+        # 发布控制参数（用于动态修改）
+        from std_msgs.msg import String, Bool
+        self.smooth_pub = self.create_publisher(Bool, f'{prefix}enable_smooth', 10)
+        self.velocity_mode_pub = self.create_publisher(String, f'{prefix}velocity_mode', 10)
+
         # 状态
         self.current_positions = [0.0] * 19
         self.cmd_positions = [0.0] * 19
@@ -90,11 +95,35 @@ class JointControlGUI(Node):
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(fill='x', padx=5, pady=5)
 
+        # 左侧：执行和归零按钮
         ttk.Button(btn_frame, text='执行',
                    command=self._send_target).pack(side='left', padx=5)
         ttk.Button(btn_frame, text='归零',
                    command=self._reset_all).pack(side='left', padx=5)
 
+        # 中间：平滑处理勾选框
+        self.smooth_var = tk.BooleanVar(value=True)
+        smooth_check = ttk.Checkbutton(
+            btn_frame, text='平滑处理',
+            variable=self.smooth_var,
+            command=self._on_smooth_changed
+        )
+        smooth_check.pack(side='left', padx=15)
+
+        # 速度模式选择
+        ttk.Label(btn_frame, text='速度:').pack(side='left', padx=(15, 5))
+        self.velocity_mode = tk.StringVar(value='normal')
+        velocity_combo = ttk.Combobox(
+            btn_frame,
+            textvariable=self.velocity_mode,
+            values=['slow', 'normal', 'fast'],
+            state='readonly',
+            width=8
+        )
+        velocity_combo.pack(side='left', padx=5)
+        velocity_combo.bind('<<ComboboxSelected>>', self._on_velocity_changed)
+
+        # 右侧：状态标签
         self.status_label = ttk.Label(btn_frame, text='就绪', foreground='green')
         self.status_label.pack(side='right', padx=10)
 
@@ -199,6 +228,23 @@ class JointControlGUI(Node):
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:
             label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
+
+    def _on_smooth_changed(self):
+        """平滑处理勾选框变化"""
+        from std_msgs.msg import Bool
+        msg = Bool()
+        msg.data = self.smooth_var.get()
+        self.smooth_pub.publish(msg)
+        status = "启用" if msg.data else "禁用"
+        self.get_logger().info(f'平滑处理已{status}')
+
+    def _on_velocity_changed(self, event=None):
+        """速度模式变化"""
+        from std_msgs.msg import String
+        msg = String()
+        msg.data = self.velocity_mode.get()
+        self.velocity_mode_pub.publish(msg)
+        self.get_logger().info(f'速度模式: {msg.data}')
 
     def _send_target(self):
         """发送目标位置"""
