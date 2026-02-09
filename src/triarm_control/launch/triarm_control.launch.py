@@ -21,7 +21,9 @@ def generate_launch_description():
 
     # 声明参数
     with_gui_arg = DeclareLaunchArgument(
-        'with_gui', default_value='false',
+        'with_gui',
+        default_value='false',
+        choices=['true', 'false'],
         description='是否启动GUI界面'
     )
 
