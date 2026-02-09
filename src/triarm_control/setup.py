@@ -26,7 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'joint_gui = triarm_control.joint_control_gui:main',
+            'controller = triarm_control.controller_node:main',
+            'gui = triarm_control.gui_node:main',
         ],
     },
 )
