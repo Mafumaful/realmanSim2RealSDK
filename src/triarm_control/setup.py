@@ -28,6 +28,8 @@ setup(
         'console_scripts': [
             'controller = triarm_control.controller_node:main',
             'gui = triarm_control.gui_node:main',
+            'unified_arm = triarm_control.unified_arm_node:main',
+            'gripper_bridge = triarm_control.gripper_bridge:main',
         ],
     },
 )

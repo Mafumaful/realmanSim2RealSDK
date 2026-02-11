@@ -24,6 +24,7 @@ class TriarmControllerNode(Node):
 
         # 声明参数
         self.declare_parameter('namespace', '')
+        self.declare_parameter('mode', 'sim')
         self.declare_parameter('joint_velocity', 30.0)
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('enable_smooth', True)
@@ -32,6 +33,7 @@ class TriarmControllerNode(Node):
 
         # 获取参数
         ns = self.get_parameter('namespace').value
+        self._mode = self.get_parameter('mode').value
         velocity = self.get_parameter('joint_velocity').value
         rate = self.get_parameter('publish_rate').value
         enable_smooth = self.get_parameter('enable_smooth').value
@@ -77,7 +79,7 @@ class TriarmControllerNode(Node):
         period = 1.0 / rate
         self.timer = self.create_timer(period, self._timer_callback)
 
-        self.get_logger().info(f'控制节点已启动')
+        self.get_logger().info(f'控制节点已启动 (mode={self._mode})')
         self.get_logger().info(f'  订阅状态: {state_topic}')
         self.get_logger().info(f'  发布指令: {cmd_topic}')
         self.get_logger().info(f'  目标输入: {target_topic}')

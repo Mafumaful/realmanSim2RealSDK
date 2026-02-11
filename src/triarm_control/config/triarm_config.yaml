@@ -3,11 +3,45 @@
 triarm_controller:
   ros__parameters:
     namespace: "robot"
-    joint_velocity: 30.0  # 关节运动速度 (度/秒)
-    publish_rate: 50.0    # 指令发布频率 (Hz)
-    enable_smooth: true   # 是否启用平滑处理
-    acceleration: 100.0   # 加速度限制 (度/秒²)
-    velocity_mode: "normal"  # 速度模式: slow, normal, fast
+    mode: "sim"             # 运行模式: sim (Isaac Sim) / real (真实机械臂)
+    joint_velocity: 30.0    # 关节运动速度 (度/秒)
+    publish_rate: 50.0      # 指令发布频率 (Hz)
+    enable_smooth: true     # 是否启用平滑处理
+    acceleration: 100.0     # 加速度限制 (度/秒²)
+    velocity_mode: "normal" # 速度模式: slow, normal, fast
+
+# 统一机械臂节点配置
+unified_arm_node:
+  ros__parameters:
+    namespace: "robot"
+    mode: "sim"             # sim / real
+    publish_rate: 20.0      # 状态发布频率 (Hz)
+    # A臂 (left)
+    arm_a:
+      ip: "192.168.1.18"
+      port: 8080
+      model: "RM_B"        # RM_65 标准版
+    # B臂 (right)
+    arm_b:
+      ip: "192.168.1.19"
+      port: 8080
+      model: "RM_B"
+    # S臂 (预留)
+    arm_s:
+      ip: "192.168.1.20"
+      port: 8080
+      model: "RM_B"
+
+# 夹爪桥接节点配置
+gripper_bridge_node:
+  ros__parameters:
+    mode: "sim"             # sim / real
+    arm_a:
+      ip: "192.168.1.18"
+      port: 8080
+    arm_b:
+      ip: "192.168.1.19"
+      port: 8080
 
 triarm_gui:
   ros__parameters:
