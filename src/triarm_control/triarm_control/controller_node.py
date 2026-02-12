@@ -65,6 +65,9 @@ class TriarmControllerNode(Node):
         self.controller.set_command_callback(self._on_command)
         self.controller.set_motion_complete_callback(self._on_complete)
 
+        # 添加参数变化回调（支持热加载）
+        self.add_on_set_parameters_callback(self._parameters_callback)
+
         # 话题名称
         prefix = f'{ns}/' if ns else '/'
         cmd_topic = f'{prefix}joint_command'
@@ -174,6 +177,26 @@ class TriarmControllerNode(Node):
 
         # 发布夹爪指令
         self.cmd_pub.publish(gripper_msg)
+
+    def _parameters_callback(self, params):
+        """参数热加载回调"""
+        from rcl_interfaces.msg import SetParametersResult
+
+        for param in params:
+            if param.name == 'left_gripper.open_angle':
+                self.left_open = param.value
+                self.get_logger().info(f'更新左夹爪打开角度: {self.left_open}°')
+            elif param.name == 'left_gripper.close_angle':
+                self.left_close = param.value
+                self.get_logger().info(f'更新左夹爪闭合角度: {self.left_close}°')
+            elif param.name == 'right_gripper.open_angle':
+                self.right_open = param.value
+                self.get_logger().info(f'更新右夹爪打开角度: {self.right_open}°')
+            elif param.name == 'right_gripper.close_angle':
+                self.right_close = param.value
+                self.get_logger().info(f'更新右夹爪闭合角度: {self.right_close}°')
+
+        return SetParametersResult(successful=True)
 
     def _timer_callback(self):
         """定时执行控制步进"""

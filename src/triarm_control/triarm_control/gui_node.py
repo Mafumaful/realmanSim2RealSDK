@@ -141,20 +141,56 @@ class JointControlGUI(Node):
         # 左夹爪控制
         left_frame = ttk.Frame(gripper_frame)
         left_frame.pack(side='left', padx=20)
-        ttk.Label(left_frame, text='左夹爪:', font=('', 10, 'bold')).pack(side='left', padx=5)
-        ttk.Button(left_frame, text='打开',
+        ttk.Label(left_frame, text='左夹爪:', font=('', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
+
+        # 左夹爪按钮
+        btn_frame_left = ttk.Frame(left_frame)
+        btn_frame_left.grid(row=1, column=0, columnspan=2, pady=5)
+        ttk.Button(btn_frame_left, text='打开',
                    command=lambda: self._send_gripper_command('left_open')).pack(side='left', padx=2)
-        ttk.Button(left_frame, text='闭合',
+        ttk.Button(btn_frame_left, text='闭合',
                    command=lambda: self._send_gripper_command('left_close')).pack(side='left', padx=2)
+
+        # 左夹爪角度设置
+        ttk.Label(left_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
+        self.left_open_entry = ttk.Entry(left_frame, width=8)
+        self.left_open_entry.insert(0, '0.0')
+        self.left_open_entry.grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Label(left_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
+        self.left_close_entry = ttk.Entry(left_frame, width=8)
+        self.left_close_entry.insert(0, '30.0')
+        self.left_close_entry.grid(row=3, column=1, padx=5, pady=2)
+
+        ttk.Button(left_frame, text='应用参数',
+                   command=lambda: self._update_gripper_params('left')).grid(row=4, column=0, columnspan=2, pady=5)
 
         # 右夹爪控制
         right_frame = ttk.Frame(gripper_frame)
         right_frame.pack(side='left', padx=20)
-        ttk.Label(right_frame, text='右夹爪:', font=('', 10, 'bold')).pack(side='left', padx=5)
-        ttk.Button(right_frame, text='打开',
+        ttk.Label(right_frame, text='右夹爪:', font=('', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
+
+        # 右夹爪按钮
+        btn_frame_right = ttk.Frame(right_frame)
+        btn_frame_right.grid(row=1, column=0, columnspan=2, pady=5)
+        ttk.Button(btn_frame_right, text='打开',
                    command=lambda: self._send_gripper_command('right_open')).pack(side='left', padx=2)
-        ttk.Button(right_frame, text='闭合',
+        ttk.Button(btn_frame_right, text='闭合',
                    command=lambda: self._send_gripper_command('right_close')).pack(side='left', padx=2)
+
+        # 右夹爪角度设置
+        ttk.Label(right_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
+        self.right_open_entry = ttk.Entry(right_frame, width=8)
+        self.right_open_entry.insert(0, '0.0')
+        self.right_open_entry.grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Label(right_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
+        self.right_close_entry = ttk.Entry(right_frame, width=8)
+        self.right_close_entry.insert(0, '30.0')
+        self.right_close_entry.grid(row=3, column=1, padx=5, pady=2)
+
+        ttk.Button(right_frame, text='应用参数',
+                   command=lambda: self._update_gripper_params('right')).grid(row=4, column=0, columnspan=2, pady=5)
 
     def _add_header_row(self, parent):
         """添加表头"""
@@ -308,6 +344,75 @@ class JointControlGUI(Node):
         msg.data = command
         self.gripper_pub.publish(msg)
         self.get_logger().info(f'发送夹爪指令: {command}')
+
+    def _update_gripper_params(self, side: str):
+        """更新夹爪参数（热加载）"""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+
+        try:
+            if side == 'left':
+                open_angle = float(self.left_open_entry.get())
+                close_angle = float(self.left_close_entry.get())
+
+                # 创建参数列表
+                params = [
+                    Parameter(
+                        name='left_gripper.open_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
+                    ),
+                    Parameter(
+                        name='left_gripper.close_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
+                    )
+                ]
+                self.get_logger().info(f'更新左夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
+
+            elif side == 'right':
+                open_angle = float(self.right_open_entry.get())
+                close_angle = float(self.right_close_entry.get())
+
+                params = [
+                    Parameter(
+                        name='right_gripper.open_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
+                    ),
+                    Parameter(
+                        name='right_gripper.close_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
+                    )
+                ]
+                self.get_logger().info(f'更新右夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
+
+            # 创建服务客户端
+            client = self.create_client(SetParameters, '/triarm_controller/set_parameters')
+
+            if not client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn('参数服务不可用')
+                return
+
+            # 发送请求
+            request = SetParameters.Request()
+            request.parameters = params
+            future = client.call_async(request)
+
+            # 简单等待结果
+            import time
+            start = time.time()
+            while not future.done() and (time.time() - start) < 1.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+
+            if future.done():
+                response = future.result()
+                if response.results[0].successful:
+                    self.get_logger().info('参数更新成功')
+                else:
+                    self.get_logger().warn(f'参数更新失败: {response.results[0].reason}')
+
+        except ValueError:
+            self.get_logger().error('输入的角度值无效')
+        except Exception as e:
+            self.get_logger().error(f'更新参数时出错: {str(e)}')
 
     def run(self):
         """运行GUI"""
