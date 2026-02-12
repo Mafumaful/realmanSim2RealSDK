@@ -58,6 +58,9 @@ class JointControlGUI(Node):
         self.smooth_pub = self.create_publisher(Bool, f'{prefix}enable_smooth', 10)
         self.velocity_mode_pub = self.create_publisher(String, f'{prefix}velocity_mode', 10)
 
+        # 发布夹爪控制指令
+        self.gripper_pub = self.create_publisher(String, f'{prefix}gripper_control', 10)
+
         # 状态
         self.current_positions = [0.0] * 19
         self.cmd_positions = [0.0] * 19
@@ -126,6 +129,32 @@ class JointControlGUI(Node):
         # 右侧：状态标签
         self.status_label = ttk.Label(btn_frame, text='就绪', foreground='green')
         self.status_label.pack(side='right', padx=10)
+
+        # 夹爪控制区域
+        self._create_gripper_controls()
+
+    def _create_gripper_controls(self):
+        """创建夹爪控制区域"""
+        gripper_frame = ttk.LabelFrame(self.root, text='夹爪控制', padding=10)
+        gripper_frame.pack(fill='x', padx=5, pady=5)
+
+        # 左夹爪控制
+        left_frame = ttk.Frame(gripper_frame)
+        left_frame.pack(side='left', padx=20)
+        ttk.Label(left_frame, text='左夹爪:', font=('', 10, 'bold')).pack(side='left', padx=5)
+        ttk.Button(left_frame, text='打开',
+                   command=lambda: self._send_gripper_command('left_open')).pack(side='left', padx=2)
+        ttk.Button(left_frame, text='闭合',
+                   command=lambda: self._send_gripper_command('left_close')).pack(side='left', padx=2)
+
+        # 右夹爪控制
+        right_frame = ttk.Frame(gripper_frame)
+        right_frame.pack(side='left', padx=20)
+        ttk.Label(right_frame, text='右夹爪:', font=('', 10, 'bold')).pack(side='left', padx=5)
+        ttk.Button(right_frame, text='打开',
+                   command=lambda: self._send_gripper_command('right_open')).pack(side='left', padx=2)
+        ttk.Button(right_frame, text='闭合',
+                   command=lambda: self._send_gripper_command('right_close')).pack(side='left', padx=2)
 
     def _add_header_row(self, parent):
         """添加表头"""
@@ -271,6 +300,14 @@ class JointControlGUI(Node):
         for idx, entry, _, _ in self.entries:
             entry.delete(0, tk.END)
             entry.insert(0, '0.0')
+
+    def _send_gripper_command(self, command: str):
+        """发送夹爪控制指令"""
+        from std_msgs.msg import String
+        msg = String()
+        msg.data = command
+        self.gripper_pub.publish(msg)
+        self.get_logger().info(f'发送夹爪指令: {command}')
 
     def run(self):
         """运行GUI"""

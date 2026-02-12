@@ -5,12 +5,14 @@
 - 订阅 /joint_states 获取实时状态
 - 发布 /joint_command 发送控制指令
 - 订阅 /target_joints 接收矩阵形式的目标位置
+- 订阅 /gripper_command 接收夹爪控制指令
 """
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
+import math
 
 from .arm_controller import ArmController
 from .joint_names import JOINT_NAMES_LIST
@@ -31,6 +33,12 @@ class TriarmControllerNode(Node):
         self.declare_parameter('acceleration', 100.0)
         self.declare_parameter('velocity_mode', 'normal')
 
+        # 夹爪参数
+        self.declare_parameter('left_gripper.open_angle', 0.0)
+        self.declare_parameter('left_gripper.close_angle', 30.0)
+        self.declare_parameter('right_gripper.open_angle', 0.0)
+        self.declare_parameter('right_gripper.close_angle', 30.0)
+
         # 获取参数
         ns = self.get_parameter('namespace').value
         self._mode = self.get_parameter('mode').value
@@ -39,6 +47,12 @@ class TriarmControllerNode(Node):
         enable_smooth = self.get_parameter('enable_smooth').value
         acceleration = self.get_parameter('acceleration').value
         velocity_mode = self.get_parameter('velocity_mode').value
+
+        # 夹爪参数
+        self.left_open = self.get_parameter('left_gripper.open_angle').value
+        self.left_close = self.get_parameter('left_gripper.close_angle').value
+        self.right_open = self.get_parameter('right_gripper.open_angle').value
+        self.right_close = self.get_parameter('right_gripper.close_angle').value
 
         # 创建控制器
         self.controller = ArmController(
@@ -74,6 +88,10 @@ class TriarmControllerNode(Node):
             Bool, f'{prefix}enable_smooth', self._smooth_callback, 10)
         self.velocity_mode_sub = self.create_subscription(
             String, f'{prefix}velocity_mode', self._velocity_mode_callback, 10)
+
+        # 夹爪控制话题
+        self.gripper_sub = self.create_subscription(
+            String, f'{prefix}gripper_control', self._gripper_callback, 10)
 
         # 定时器
         period = 1.0 / rate
@@ -114,6 +132,48 @@ class TriarmControllerNode(Node):
         """处理速度模式变化"""
         self.controller.set_velocity_mode(msg.data)
         self.get_logger().info(f'速度模式: {msg.data}')
+
+    def _gripper_callback(self, msg):
+        """处理夹爪控制指令
+
+        指令格式: "left_open", "left_close", "right_open", "right_close"
+        """
+        command = msg.data.lower()
+
+        # 构建夹爪指令消息
+        gripper_msg = JointState()
+        gripper_msg.header.stamp = self.get_clock().now().to_msg()
+
+        if command == 'left_open':
+            gripper_msg.name = ['joint_L1', 'joint_L11']
+            angle_rad = math.radians(self.left_open)
+            gripper_msg.position = [angle_rad, angle_rad]
+            self.get_logger().info(f'左夹爪打开: {self.left_open}°')
+
+        elif command == 'left_close':
+            gripper_msg.name = ['joint_L1', 'joint_L11']
+            angle_rad = math.radians(self.left_close)
+            gripper_msg.position = [angle_rad, angle_rad]
+            self.get_logger().info(f'左夹爪闭合: {self.left_close}°')
+
+        elif command == 'right_open':
+            gripper_msg.name = ['joint_R1', 'joint_R11']
+            angle_rad = math.radians(self.right_open)
+            gripper_msg.position = [angle_rad, angle_rad]
+            self.get_logger().info(f'右夹爪打开: {self.right_open}°')
+
+        elif command == 'right_close':
+            gripper_msg.name = ['joint_R1', 'joint_R11']
+            angle_rad = math.radians(self.right_close)
+            gripper_msg.position = [angle_rad, angle_rad]
+            self.get_logger().info(f'右夹爪闭合: {self.right_close}°')
+
+        else:
+            self.get_logger().warn(f'未知的夹爪指令: {command}')
+            return
+
+        # 发布夹爪指令
+        self.cmd_pub.publish(gripper_msg)
 
     def _timer_callback(self):
         """定时执行控制步进"""
