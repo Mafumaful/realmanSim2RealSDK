@@ -1,0 +1,12 @@
+# 逆运动学求解服务
+
+# 请求
+string arm_id                    # 机械臂标识: "arm_a", "arm_b", "arm_s"
+geometry_msgs/Pose target_pose   # 目标TCP位姿
+
+---
+
+# 响应
+bool success                     # 求解结果
+float64[] joint_positions        # 关节位置解 (单位: 弧度)
+string message                   # 结果描述

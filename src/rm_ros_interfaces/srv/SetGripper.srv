@@ -1,0 +1,16 @@
+# 夹爪控制服务
+
+# 请求
+string gripper_id                # 夹爪标识: "left", "right"
+string command                   # 指令: "open", "close", "pick", "set_position"
+float64 position                 # 目标位置 (单位: 度, 用于set_position)
+float64 speed                    # 速度 (单位: 度/秒)
+float64 force                    # 力 (单位: N, 用于pick)
+bool blocking                    # 是否阻塞等待完成
+float64 timeout                  # 超时时间 (单位: 秒)
+
+---
+
+# 响应
+bool success                     # 执行结果
+string message                   # 结果描述

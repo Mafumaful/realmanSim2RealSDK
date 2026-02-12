@@ -1,0 +1,22 @@
+# 夹爪动作
+
+# 目标
+string gripper_id                # 夹爪标识: "left", "right"
+string command                   # 指令: "open", "close", "pick"
+float64 target_position          # 目标位置 (单位: 度)
+float64 speed                    # 速度 (单位: 度/秒)
+float64 force                    # 力 (单位: N, 用于pick)
+
+---
+
+# 结果
+bool success                     # 执行结果
+float64 final_position           # 最终位置 (单位: 度)
+string message                   # 结果描述
+
+---
+
+# 反馈
+float64 current_position         # 当前位置 (单位: 度)
+float64 current_force            # 当前力 (单位: N)
+string state                     # 状态: "opening", "closing", "picking"
