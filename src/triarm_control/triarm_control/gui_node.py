@@ -336,6 +336,9 @@ class JointControlGUI(Node):
         for idx, entry, _, _ in self.entries:
             entry.delete(0, tk.END)
             entry.insert(0, '0.0')
+        # 同步更新滑块
+        for idx, var, _, _ in self.sliders:
+            var.set(0.0)
 
     def _send_gripper_command(self, command: str):
         """发送夹爪控制指令"""
