@@ -150,25 +150,25 @@ class TriarmControllerNode(Node):
         if command == 'left_open':
             gripper_msg.name = ['joint_L1', 'joint_L11']
             angle_rad = math.radians(self.left_open)
-            gripper_msg.position = [angle_rad, angle_rad]
+            gripper_msg.position = [angle_rad, -angle_rad]  # L1和L11方向相反
             self.get_logger().info(f'左夹爪打开: {self.left_open}°')
 
         elif command == 'left_close':
             gripper_msg.name = ['joint_L1', 'joint_L11']
             angle_rad = math.radians(self.left_close)
-            gripper_msg.position = [angle_rad, angle_rad]
+            gripper_msg.position = [angle_rad, -angle_rad]  # L1和L11方向相反
             self.get_logger().info(f'左夹爪闭合: {self.left_close}°')
 
         elif command == 'right_open':
             gripper_msg.name = ['joint_R1', 'joint_R11']
             angle_rad = math.radians(self.right_open)
-            gripper_msg.position = [angle_rad, angle_rad]
+            gripper_msg.position = [angle_rad, -angle_rad]  # R1和R11方向相反
             self.get_logger().info(f'右夹爪打开: {self.right_open}°')
 
         elif command == 'right_close':
             gripper_msg.name = ['joint_R1', 'joint_R11']
             angle_rad = math.radians(self.right_close)
-            gripper_msg.position = [angle_rad, angle_rad]
+            gripper_msg.position = [angle_rad, -angle_rad]  # R1和R11方向相反
             self.get_logger().info(f'右夹爪闭合: {self.right_close}°')
 
         else:
