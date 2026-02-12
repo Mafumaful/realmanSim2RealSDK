@@ -23,6 +23,8 @@ unified_arm_node:
     namespace: "robot"
     mode: "sim"             # sim / real
     publish_rate: 20.0      # 状态发布频率 (Hz)
+    sim_joint_tolerance: 0.02   # sim运动完成检测阈值 (弧度)
+    sim_motion_timeout: 10.0    # sim运动完成超时 (秒)
     # A臂 (left)
     arm_a:
       ip: "192.168.1.18"
@@ -43,6 +45,7 @@ unified_arm_node:
 gripper_bridge_node:
   ros__parameters:
     mode: "sim"             # sim / real
+    sim_gripper_delay: 0.5  # sim夹爪动作模拟延时 (秒)
     arm_a:
       ip: "192.168.1.18"
       port: 8080

@@ -10,22 +10,20 @@
   {arm_name}/rm_driver/udp_arm_position (Pose反馈)
   {arm_name}/joint_states (JointState反馈)
 
-双模式：
-  sim: Pose → 欧拉角 → IK(SDK Algo) → 关节角度 → 映射到19关节数组 → 现有插值逻辑
-  real: Pose → 欧拉角 → SDK TCP 直接控制 RM65
-
-夹爪桥接话题也在此节点中创建。
+双模式 (由 RealManSDKWrapper 内部路由):
+  sim: Pose → SDK Algo IK → 关节角度 → 映射到19关节数组 → 现有插值逻辑
+  real: Pose → SDK TCP 直接控制 RM65
 """
 
 import math
+import time
 import threading
-import numpy as np
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Empty, Float64MultiArray
+from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
 
 import transforms3d.quaternions as txq
@@ -66,17 +64,20 @@ class ArmBridge:
     """单臂桥接器 - 管理一个臂的话题和SDK实例"""
 
     def __init__(self, node: Node, arm_name: str, mode: str,
-                 ip: str, port: int, arm_id: str):
+                 ip: str, port: int, arm_id: str,
+                 sim_joint_tol: float = 0.02,
+                 sim_motion_timeout: float = 10.0):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
         self.logger = node.get_logger()
         self._tag = f'[ArmBridge:{arm_name}]'
         self._joint_indices = ARM_JOINT_INDICES.get(arm_name, [])
+        self._sim_joint_tol = sim_joint_tol
+        self._sim_motion_timeout = sim_motion_timeout
 
-        # SDK wrapper (real模式 或 sim模式IK解算都需要)
-        self._sdk = RealManSDKWrapper(ip, port, arm_id)
-        self._sdk_connected = False
+        # SDK wrapper (模式感知，内部自动路由 sim/real)
+        self._sdk = RealManSDKWrapper(ip, port, arm_id, mode=mode)
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
@@ -113,103 +114,80 @@ class ArmBridge:
             Empty, f'{prefix}rm_driver/move_stop_cmd',
             self._on_stop, 10)
 
-        # sim模式: 发布到 /target_joints 的发布器 (由外部设置)
-        self._target_joints_pub = None
+        # sim模式: 共享目标发布回调 (由外部设置)
+        self._publish_shared_target = None
 
         self.logger.info(
             f'{self._tag} 初始化完成 (mode={mode}, ip={ip}:{port})')
 
-    def set_target_joints_pub(self, pub):
-        """设置 /target_joints 发布器 (sim模式共享)"""
-        self._target_joints_pub = pub
+    def set_publish_target_fn(self, fn):
+        """设置共享目标发布回调 (sim模式)
+        fn(indices, joints_rad) → 更新共享19关节数组并发布
+        """
+        self._publish_shared_target = fn
 
     def connect_sdk(self) -> bool:
-        """连接SDK (real模式必须, sim模式可选用于IK)"""
-        if self.mode == 'sim':
-            # sim模式尝试连接用于IK，失败不阻塞
-            self._sdk_connected = self._sdk.connect()
-            if not self._sdk_connected:
-                self.logger.warn(
-                    f'{self._tag} sim模式SDK连接失败，将使用简化IK')
-            return True
+        """连接SDK (内部根据mode自动路由)"""
+        ok = self._sdk.connect()
+        if ok:
+            self.logger.info(f'{self._tag} SDK就绪')
         else:
-            # real模式必须连接
-            self._sdk_connected = self._sdk.connect()
-            if not self._sdk_connected:
-                self.logger.error(
-                    f'{self._tag} real模式SDK连接失败!')
-            return self._sdk_connected
+            self.logger.error(f'{self._tag} SDK连接失败!')
+        return ok
 
     def disconnect_sdk(self):
-        if self._sdk_connected:
-            self._sdk.disconnect()
+        self._sdk.disconnect()
 
     # ─── 命令回调 ───
 
     def _on_movel(self, msg: Movel):
-        """MoveL 命令处理"""
         threading.Thread(
             target=self._exec_movel, args=(msg,), daemon=True).start()
 
     def _on_movej(self, msg: Movej):
-        """MoveJ 命令处理"""
         threading.Thread(
             target=self._exec_movej, args=(msg,), daemon=True).start()
 
     def _on_movejp(self, msg: Movejp):
-        """MoveJP 命令处理"""
         threading.Thread(
             target=self._exec_movejp, args=(msg,), daemon=True).start()
 
     def _on_stop(self, msg: Empty):
-        """停止命令"""
         self.logger.warn(f'{self._tag} 收到停止命令')
-        if self.mode == 'real' and self._sdk_connected:
+        if self.mode == 'real':
             self._sdk.stop()
 
     # ─── 执行逻辑 ───
 
     def _exec_movel(self, msg: Movel):
-        """执行 MoveL"""
         x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
         speed = msg.speed
-        success = False
-
         if self.mode == 'real':
             success = self._real_movel(x, y, z, rx, ry, rz, speed)
         else:
             success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
-
         result = Bool()
         result.data = success
         self._movel_result_pub.publish(result)
 
     def _exec_movej(self, msg: Movej):
-        """执行 MoveJ"""
         joints = list(msg.joint)
         speed = msg.speed
-        success = False
-
         if self.mode == 'real':
             success = self._real_movej(joints, speed)
         else:
             success = self._sim_move_joints(joints)
-
         result = Bool()
         result.data = success
         self._movej_result_pub.publish(result)
 
     def _exec_movejp(self, msg: Movejp):
-        """执行 MoveJP"""
         x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
         speed = msg.speed
-        success = False
-
         if self.mode == 'real':
             success = self._real_movejp(x, y, z, rx, ry, rz, speed)
         else:
             success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
-
         result = Bool()
         result.data = success
         self._movejp_result_pub.publish(result)
@@ -217,44 +195,44 @@ class ArmBridge:
     # ─── Real 模式 ───
 
     def _real_movel(self, x, y, z, rx, ry, rz, speed) -> bool:
-        if not self._sdk_connected:
-            return False
         ret = self._sdk.movel(x, y, z, rx, ry, rz, speed)
         return ret == SDKMotionResult.SUCCESS
 
     def _real_movej(self, joints, speed) -> bool:
-        if not self._sdk_connected:
-            return False
         ret = self._sdk.movej(joints, speed)
         return ret == SDKMotionResult.SUCCESS
 
     def _real_movejp(self, x, y, z, rx, ry, rz, speed) -> bool:
-        if not self._sdk_connected:
-            return False
         ret = self._sdk.movej_p(x, y, z, rx, ry, rz, speed)
         return ret == SDKMotionResult.SUCCESS
 
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: Pose → IK → 关节角度 → /target_joints"""
-        joints = None
-        if self._sdk_connected:
-            joints = self._sdk.inverse_kinematics(
-                x, y, z, rx, ry, rz)
+        """sim模式: Pose → SDK IK解算 → 关节角度 → /target_joints"""
+        if not self._sdk.is_ready:
+            self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
+            return False
+
+        # 用当前关节作为IK参考解
+        with self._lock:
+            q_ref = list(self._current_joints)
+
+        joints = self._sdk.inverse_kinematics(
+            x, y, z, rx, ry, rz, q_ref=q_ref)
 
         if joints is None:
-            # 简化IK不可用时，直接用当前关节 (降级)
             self.logger.warn(
-                f'{self._tag} IK不可用，sim模式降级')
+                f'{self._tag} IK求解失败 '
+                f'(target=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
         return self._sim_move_joints(joints)
 
     def _sim_move_joints(self, joints) -> bool:
-        """sim模式: 关节角度 → 映射到19关节数组 → /target_joints"""
-        if not self._target_joints_pub:
-            self.logger.error(f'{self._tag} target_joints发布器未设置')
+        """sim模式: 关节角度 → 更新共享目标数组 → /target_joints → 等待到位"""
+        if not self._publish_shared_target:
+            self.logger.error(f'{self._tag} 共享目标发布回调未设置')
             return False
 
         if len(self._joint_indices) != len(joints):
@@ -263,30 +241,35 @@ class ArmBridge:
                 f'indices={len(self._joint_indices)}, joints={len(joints)}')
             return False
 
-        # 构建19关节数组 (角度制)
-        msg = Float64MultiArray()
-        data = [0.0] * 19
-        for idx, joint_val in zip(self._joint_indices, joints):
-            data[idx] = math.degrees(joint_val)
-        msg.data = data
-
-        self._target_joints_pub.publish(msg)
-
-        # 更新内部状态
-        with self._lock:
-            self._current_joints = list(joints)
+        # 通过共享回调更新臂关节并发布完整19关节数组
+        self._publish_shared_target(self._joint_indices, joints)
 
         self.logger.info(
             f'{self._tag} sim发送关节目标: '
             f'{[f"{math.degrees(j):.1f}" for j in joints]}')
-        return True
+
+        # 轮询等待关节到位
+        target = list(joints)
+        start = time.time()
+        while time.time() - start < self._sim_motion_timeout:
+            time.sleep(0.05)
+            with self._lock:
+                current = list(self._current_joints)
+            max_err = max(abs(c - t) for c, t in zip(current, target))
+            if max_err < self._sim_joint_tol:
+                self.logger.info(
+                    f'{self._tag} sim关节到位 (max_err={max_err:.4f} rad)')
+                return True
+
+        self.logger.warn(
+            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s)')
+        return False
 
     # ─── 状态反馈 ───
 
     def publish_state(self):
         """发布当前状态 (由定时器调用)"""
-        if self.mode == 'real' and self._sdk_connected:
-            # 从SDK获取真实状态
+        if self.mode == 'real' and self._sdk.is_connected:
             joints = self._sdk.get_joint_positions()
             if joints:
                 with self._lock:
@@ -309,7 +292,27 @@ class ArmBridge:
                 with self._lock:
                     self._current_pose = pose
 
-        # 发布 JointState
+        elif self.mode == 'sim' and self._sdk.is_ready:
+            # sim模式: FK 回算末端位姿
+            with self._lock:
+                joints_copy = list(self._current_joints)
+            pose_dict = self._sdk.forward_kinematics(joints_copy)
+            if pose_dict:
+                pose = Pose()
+                pose.position.x = pose_dict['x']
+                pose.position.y = pose_dict['y']
+                pose.position.z = pose_dict['z']
+                R = txe.euler2mat(
+                    pose_dict['rx'], pose_dict['ry'],
+                    pose_dict['rz'], 'sxyz')
+                q = txq.mat2quat(R)
+                pose.orientation.w = float(q[0])
+                pose.orientation.x = float(q[1])
+                pose.orientation.y = float(q[2])
+                pose.orientation.z = float(q[3])
+                with self._lock:
+                    self._current_pose = pose
+
         js_msg = JointState()
         js_msg.header.stamp = self.node.get_clock().now().to_msg()
         with self._lock:
@@ -318,7 +321,6 @@ class ArmBridge:
             js_msg.position = list(self._current_joints)
         self._joint_state_pub.publish(js_msg)
 
-        # 发布 Pose
         with self._lock:
             self._arm_pos_pub.publish(self._current_pose)
 
@@ -346,21 +348,42 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_s.port', 8080)
         self.declare_parameter('namespace', '')
         self.declare_parameter('publish_rate', 20.0)
+        self.declare_parameter('sim_joint_tolerance', 0.02)
+        self.declare_parameter('sim_motion_timeout', 10.0)
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
         rate = self.get_parameter('publish_rate').value
+        self._sim_joint_tol = self.get_parameter('sim_joint_tolerance').value
+        self._sim_motion_timeout = self.get_parameter('sim_motion_timeout').value
 
         self.get_logger().info(f'=== UnifiedArmNode 启动 (mode={mode}) ===')
 
-        # sim模式: /target_joints 发布器 (共享)
+        # sim模式: /target_joints 发布器 (共享) + 底盘角度桥接
         prefix = f'{ns}/' if ns else '/'
+        self._mode = mode
         self._target_joints_pub = None
+        self._base_angle_pub = None
+
+        # 共享19关节目标数组 (角度制, sim模式核心状态)
+        self._shared_target = [0.0] * 19
+        self._shared_target_lock = threading.Lock()
+        self._current_d1_angle = 0.0  # D1当前角度 (度, 由_sim_state_cb更新)
+
         if mode == 'sim':
             self._target_joints_pub = self.create_publisher(
                 Float64MultiArray, f'{prefix}target_joints', 10)
+            self._base_angle_pub = self.create_publisher(
+                Float64, '/base_controller/current_angle', 10)
 
-        # 创建 A/B 臂桥接器
+            # D1旋转: 订阅 rotate_cmd, 发布 rotate_result
+            self._rotate_cmd_sub = self.create_subscription(
+                Float64, '/base_controller/rotate_cmd',
+                self._on_rotate_cmd, 10)
+            self._rotate_result_pub = self.create_publisher(
+                Bool, '/base_controller/rotate_result', 10)
+
+        # 创建 A/B 臂桥接器 (SDK内部处理mode路由)
         self._bridges = {}
         for arm_name in ['arm_a', 'arm_b']:
             ip = self.get_parameter(f'{arm_name}.ip').value
@@ -368,9 +391,11 @@ class UnifiedArmNode(Node):
             arm_id = arm_name[-1].upper()
 
             bridge = ArmBridge(
-                self, arm_name, mode, ip, port, arm_id)
+                self, arm_name, mode, ip, port, arm_id,
+                sim_joint_tol=self._sim_joint_tol,
+                sim_motion_timeout=self._sim_motion_timeout)
             if mode == 'sim':
-                bridge.set_target_joints_pub(self._target_joints_pub)
+                bridge.set_publish_target_fn(self._update_and_publish_target)
             bridge.connect_sdk()
             self._bridges[arm_name] = bridge
 
@@ -391,13 +416,78 @@ class UnifiedArmNode(Node):
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
 
     def _sim_state_cb(self, msg: JointState):
-        """从 Isaac Sim 的 /joint_states 更新各臂状态"""
         positions = list(msg.position)
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
+        # 底盘角度桥接: D1 (index 0) → /base_controller/current_angle
+        if self._base_angle_pub and len(positions) > 0:
+            d1_deg = math.degrees(positions[0])
+            self._current_d1_angle = d1_deg
+            angle_msg = Float64()
+            angle_msg.data = d1_deg
+            self._base_angle_pub.publish(angle_msg)
+
+    # ─── 共享目标管理 (sim模式) ───
+
+    def _update_and_publish_target(self, indices, joints_rad):
+        """更新共享19关节目标数组的指定部分并发布
+        Args:
+            indices: 关节索引列表
+            joints_rad: 对应的关节角度 (弧度)
+        """
+        if not self._target_joints_pub:
+            return
+        with self._shared_target_lock:
+            for idx, val in zip(indices, joints_rad):
+                self._shared_target[idx] = math.degrees(val)
+            msg = Float64MultiArray()
+            msg.data = list(self._shared_target)
+        self._target_joints_pub.publish(msg)
+
+    def _on_rotate_cmd(self, msg: Float64):
+        """sim模式: 处理底盘旋转命令 (D1)"""
+        threading.Thread(
+            target=self._exec_sim_rotate,
+            args=(msg.data,), daemon=True).start()
+
+    def _exec_sim_rotate(self, target_angle: float):
+        """sim模式: 执行D1旋转 → 更新共享目标 → 等待到位 → 发布结果"""
+        D1_INDEX = 0
+        POSITION_TOL = 0.5  # 度
+
+        self.get_logger().info(
+            f'[D1] sim旋转命令: {target_angle}°')
+
+        # 更新D1到共享目标并发布
+        with self._shared_target_lock:
+            self._shared_target[D1_INDEX] = target_angle
+            msg = Float64MultiArray()
+            msg.data = list(self._shared_target)
+        self._target_joints_pub.publish(msg)
+
+        # 轮询等待D1到位 (Isaac Sim反馈 → _sim_state_cb → _current_d1_angle)
+        timeout = self._sim_motion_timeout
+        start = time.time()
+        while time.time() - start < timeout:
+            time.sleep(0.1)
+            current = self._current_d1_angle
+            if abs(current - target_angle) < POSITION_TOL:
+                self.get_logger().info(
+                    f'[D1] sim旋转到位 ({current:.1f}°)')
+                result = Bool()
+                result.data = True
+                self._rotate_result_pub.publish(result)
+                return
+
+        self.get_logger().warn(
+            f'[D1] sim旋转超时 ({timeout}s), '
+            f'当前={self._current_d1_angle:.1f}° 目标={target_angle}°')
+        result = Bool()
+        result.data = False
+        self._rotate_result_pub.publish(result)
+
     def _publish_states(self):
-        """定时发布所有臂的状态"""
         for bridge in self._bridges.values():
             bridge.publish_state()
 
