@@ -30,11 +30,21 @@ class JointControlGUI(Node):
         self.declare_parameter('namespace', '')
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 500)
+        # 夹爪参数
+        self.declare_parameter('left_gripper.open_angle', 0.0)
+        self.declare_parameter('left_gripper.close_angle', -30.0)
+        self.declare_parameter('right_gripper.open_angle', 0.0)
+        self.declare_parameter('right_gripper.close_angle', -30.0)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
         self.gui_width = self.get_parameter('gui_width').value
         self.gui_height = self.get_parameter('gui_height').value
+        # 获取夹爪参数
+        self.left_open_angle = self.get_parameter('left_gripper.open_angle').value
+        self.left_close_angle = self.get_parameter('left_gripper.close_angle').value
+        self.right_open_angle = self.get_parameter('right_gripper.open_angle').value
+        self.right_close_angle = self.get_parameter('right_gripper.close_angle').value
 
         # 话题名称
         prefix = f'{ns}/' if ns else '/'
@@ -154,12 +164,12 @@ class JointControlGUI(Node):
         # 左夹爪角度设置
         ttk.Label(left_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
         self.left_open_entry = ttk.Entry(left_frame, width=8)
-        self.left_open_entry.insert(0, '0.0')
+        self.left_open_entry.insert(0, str(self.left_open_angle))
         self.left_open_entry.grid(row=2, column=1, padx=5, pady=2)
 
         ttk.Label(left_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
         self.left_close_entry = ttk.Entry(left_frame, width=8)
-        self.left_close_entry.insert(0, '30.0')
+        self.left_close_entry.insert(0, str(self.left_close_angle))
         self.left_close_entry.grid(row=3, column=1, padx=5, pady=2)
 
         ttk.Button(left_frame, text='应用参数',
@@ -181,12 +191,12 @@ class JointControlGUI(Node):
         # 右夹爪角度设置
         ttk.Label(right_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
         self.right_open_entry = ttk.Entry(right_frame, width=8)
-        self.right_open_entry.insert(0, '0.0')
+        self.right_open_entry.insert(0, str(self.right_open_angle))
         self.right_open_entry.grid(row=2, column=1, padx=5, pady=2)
 
         ttk.Label(right_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
         self.right_close_entry = ttk.Entry(right_frame, width=8)
-        self.right_close_entry.insert(0, '30.0')
+        self.right_close_entry.insert(0, str(self.right_close_angle))
         self.right_close_entry.grid(row=3, column=1, padx=5, pady=2)
 
         ttk.Button(right_frame, text='应用参数',
