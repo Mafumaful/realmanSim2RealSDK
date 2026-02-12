@@ -30,21 +30,14 @@ class JointControlGUI(Node):
         self.declare_parameter('namespace', '')
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 500)
-        # 夹爪参数
-        self.declare_parameter('left_gripper.open_angle', 0.0)
-        self.declare_parameter('left_gripper.close_angle', -30.0)
-        self.declare_parameter('right_gripper.open_angle', 0.0)
-        self.declare_parameter('right_gripper.close_angle', -30.0)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
         self.gui_width = self.get_parameter('gui_width').value
         self.gui_height = self.get_parameter('gui_height').value
-        # 获取夹爪参数
-        self.left_open_angle = self.get_parameter('left_gripper.open_angle').value
-        self.left_close_angle = self.get_parameter('left_gripper.close_angle').value
-        self.right_open_angle = self.get_parameter('right_gripper.open_angle').value
-        self.right_close_angle = self.get_parameter('right_gripper.close_angle').value
+
+        # 从controller节点获取夹爪参数
+        self._load_gripper_params_from_controller()
 
         # 话题名称
         prefix = f'{ns}/' if ns else '/'
@@ -357,6 +350,49 @@ class JointControlGUI(Node):
         msg.data = command
         self.gripper_pub.publish(msg)
         self.get_logger().info(f'发送夹爪指令: {command}')
+
+    def _load_gripper_params_from_controller(self):
+        """从controller节点获取夹爪参数"""
+        from rcl_interfaces.srv import GetParameters
+
+        # 默认值
+        self.left_open_angle = 0.0
+        self.left_close_angle = -30.0
+        self.right_open_angle = 0.0
+        self.right_close_angle = -30.0
+
+        try:
+            client = self.create_client(GetParameters, '/triarm_controller/get_parameters')
+            if not client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warn('controller参数服务不可用，使用默认夹爪参数')
+                return
+
+            request = GetParameters.Request()
+            request.names = [
+                'left_gripper.open_angle',
+                'left_gripper.close_angle',
+                'right_gripper.open_angle',
+                'right_gripper.close_angle'
+            ]
+
+            future = client.call_async(request)
+
+            # 等待结果
+            import time
+            start = time.time()
+            while not future.done() and (time.time() - start) < 2.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+
+            if future.done():
+                response = future.result()
+                if len(response.values) >= 4:
+                    self.left_open_angle = response.values[0].double_value
+                    self.left_close_angle = response.values[1].double_value
+                    self.right_open_angle = response.values[2].double_value
+                    self.right_close_angle = response.values[3].double_value
+                    self.get_logger().info(f'从controller加载夹爪参数: 左={self.left_close_angle}°, 右={self.right_close_angle}°')
+        except Exception as e:
+            self.get_logger().warn(f'获取controller参数失败: {e}，使用默认值')
 
     def _update_gripper_params(self, side: str):
         """更新夹爪参数（热加载）"""
