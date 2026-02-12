@@ -49,11 +49,11 @@ gripper_config:
     # 左夹爪 (joint_L1, joint_L11)
     left_gripper:
       open_angle: 0.0      # 打开角度 (度)
-      close_angle: 30.0    # 闭合角度 (度)
+      close_angle: -30.0    # 闭合角度 (度)
     # 右夹爪 (joint_R1, joint_R11)
     right_gripper:
       open_angle: 0.0      # 打开角度 (度)
-      close_angle: 30.0    # 闭合角度 (度)
+      close_angle: -30.0    # 闭合角度 (度)
 
 triarm_gui:
   ros__parameters:
