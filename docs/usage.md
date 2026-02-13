@@ -1,427 +1,255 @@
 # 使用指南
 
-## 安装
-
-### 系统依赖
+## 系统依赖
 
 ```bash
-# ROS2 Humble
+# ROS 2 Humble
 sudo apt-get install ros-humble-desktop
 
-# Python依赖
-sudo apt-get install python3-tk python3-pip
+# Python 依赖
+pip install Robotic_Arm transforms3d
+sudo apt-get install python3-tk   # GUI 可选
 
-# ROS2消息类型
-sudo apt-get install ros-humble-sensor-msgs ros-humble-std-msgs
+# ROS 2 消息包
+# rm_ros_interfaces (RealMan 官方 ROS 2 消息包，需单独编译)
 ```
 
-### 编译项目
+---
+
+## 编译
 
 ```bash
-cd ~/Code/realmanSim2RealSDK
+cd realman_sim2real_sdk
 make build
 ```
-
-编译完成后会在 `install/` 目录生成安装文件。
 
 ---
 
 ## 启动方式
 
-### 方式1: 使用Makefile（推荐）
+### 仿真模式 (与 Isaac Sim 配合)
 
 ```bash
-# 仅控制节点（无GUI）
-make run
-
-# 控制节点 + GUI
-make run-gui
-```
-
-### 方式2: 使用launch文件
-
-```bash
-# 仿真模式，无GUI
-ros2 launch triarm_control triarm_control.launch.py
-
-# 仿真模式，带GUI
-ros2 launch triarm_control triarm_control.launch.py with_gui:=true
-
-# 真机模式，带GUI
-ros2 launch triarm_control triarm_control.launch.py mode:=real with_gui:=true
-```
-
-### 方式3: 单独启动节点
-
-```bash
-# 控制节点
-ros2 run triarm_control controller
-
-# GUI节点
-ros2 run triarm_control gui
-
-# 统一机械臂节点
-ros2 run triarm_control unified_arm
-
-# 夹爪桥接节点
-ros2 run triarm_control gripper_bridge
-```
-
----
-
-## 矩阵输入接口
-
-### 关节顺序
-
-19个关节按以下顺序排列：
-
-```
-索引 0:     D1      (平台旋转)
-索引 1-6:   A1-A6   (机械臂A)
-索引 7-12:  B1-B6   (机械臂B)
-索引 13-18: S1-S6   (机械臂S)
-```
-
-### 命令行发送
-
-```bash
-# 所有关节归零
-ros2 topic pub --once /target_joints std_msgs/Float64MultiArray \
-  "data: [0,0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]"
-
-# 平台旋转45度
-ros2 topic pub --once /target_joints std_msgs/Float64MultiArray \
-  "data: [45, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]"
-
-# 机械臂A的A2关节转30度，A3转-20度
-ros2 topic pub --once /target_joints std_msgs/Float64MultiArray \
-  "data: [0, 0,30,-20,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]"
-
-# 多个机械臂同时运动
-ros2 topic pub --once /target_joints std_msgs/Float64MultiArray \
-  "data: [0, 10,20,0,0,0,0, 15,25,0,0,0,0, 20,30,0,0,0,0]"
-```
-
-### Python代码发送
-
-#### 简单示例
-
-```python
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray
-import time
-
-rclpy.init()
-node = Node('target_sender')
-pub = node.create_publisher(Float64MultiArray, '/target_joints', 10)
-
-# 等待连接建立
-time.sleep(0.5)
-
-# 构建目标位置 (19个关节，单位：度)
-msg = Float64MultiArray()
-msg.data = [
-    0.0,                              # D1 平台
-    0.0, 30.0, -20.0, 0.0, 0.0, 0.0,  # A1-A6
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,     # B1-B6
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,     # S1-S6
-]
-
-pub.publish(msg)
-print("目标位置已发送")
-
-node.destroy_node()
-rclpy.shutdown()
-```
-
-#### 完整示例（带状态监控）
-
-```python
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray
-from sensor_msgs.msg import JointState
-import math
-
-class ArmController(Node):
-    def __init__(self):
-        super().__init__('arm_controller')
-
-        # 发布目标位置
-        self.target_pub = self.create_publisher(
-            Float64MultiArray, '/target_joints', 10)
-
-        # 订阅实时状态
-        self.state_sub = self.create_subscription(
-            JointState, '/joint_states', self.state_callback, 10)
-
-        self.current_positions = [0.0] * 19
-
-    def state_callback(self, msg):
-        """接收实时关节状态"""
-        if msg.position:
-            # 转换为角度
-            self.current_positions = [math.degrees(p) for p in msg.position]
-            print(f"当前位置: {[f'{p:.1f}' for p in self.current_positions[:3]]}")
-
-    def send_target(self, positions):
-        """发送目标位置"""
-        msg = Float64MultiArray()
-        msg.data = positions
-        self.target_pub.publish(msg)
-        self.get_logger().info(f'发送目标: {positions[:3]}...')
-
-def main():
-    rclpy.init()
-    controller = ArmController()
-
-    # 等待连接
-    import time
-    time.sleep(1.0)
-
-    # 发送目标位置
-    target = [0.0] * 19
-    target[1] = 30.0  # A1转30度
-    target[2] = -20.0 # A2转-20度
-    controller.send_target(target)
-
-    # 持续监控状态
-    try:
-        rclpy.spin(controller)
-    except KeyboardInterrupt:
-        pass
-
-    controller.destroy_node()
-    rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
-```
-
----
-
-## GUI使用
-
-### 界面说明
-
-GUI分为4个标签页：
-- **平台**：控制D1关节
-- **机械臂A**：控制A1-A6
-- **机械臂B**：控制B1-B6
-- **机械臂S**：控制S1-S6
-
-### 控制元素
-
-每个关节行包含：
-
-| 列 | 说明 |
-|----|------|
-| **关节** | 关节编号 |
-| **实时值** (蓝色) | 来自机械臂的当前位置 |
-| **指令值** (绿色) | 正在发送的控制指令 |
-| **滑块** | 拖动调节目标角度 |
-| **输入框** | 精确输入目标角度 |
-
-### 按钮功能
-
-- **执行**：开始运动到设定的目标位置
-- **归零**：将所有目标角度设为0°
-- **平滑处理**：勾选启用S型曲线插值
-- **速度选择**：slow (0.5x) / normal (1.0x) / fast (2.0x)
-
-### 操作流程
-
-1. 启动GUI：`make run-gui`
-2. 等待"实时值"显示数据（蓝色数字）
-3. 使用滑块或输入框设置目标角度
-4. 点击"执行"按钮
-5. 观察"指令值"（绿色）逐渐接近目标
-
----
-
-## 速度控制
-
-### 动态调节速度
-
-#### 通过GUI
-
-在GUI界面选择速度模式：
-- **slow**: 15度/秒 (0.5x)
-- **normal**: 30度/秒 (1.0x)
-- **fast**: 60度/秒 (2.0x)
-
-#### 通过话题
-
-```bash
-# 设置为快速模式
-ros2 topic pub --once /velocity_mode std_msgs/String "data: 'fast'"
-
-# 设置为慢速模式
-ros2 topic pub --once /velocity_mode std_msgs/String "data: 'slow'"
-
-# 恢复正常速度
-ros2 topic pub --once /velocity_mode std_msgs/String "data: 'normal'"
-```
-
-### 平滑处理开关
-
-#### 通过GUI
-
-勾选/取消勾选"平滑处理"复选框
-
-#### 通过话题
-
-```bash
-# 启用平滑处理
-ros2 topic pub --once /enable_smooth std_msgs/Bool "data: true"
-
-# 禁用平滑处理
-ros2 topic pub --once /enable_smooth std_msgs/Bool "data: false"
-```
-
----
-
-## 模式切换
-
-### 仿真模式 (sim)
-
-```bash
+# 无 GUI
 ros2 launch triarm_control triarm_control.launch.py mode:=sim
+
+# 带 GUI
+ros2 launch triarm_control triarm_control.launch.py mode:=sim with_gui:=true
 ```
 
-**特点**：
-- 与Isaac Sim通信
-- 无需真实硬件
-- 用于算法验证
+启动后会运行以下节点：
+- `unified_arm_node` — 臂桥接 + D1 旋转 + sim 反馈闭环
+- `gripper_bridge_node` — 夹爪桥接 (sim mock)
+- `controller_node` — 平滑插值控制器
+- `gui_node` — 可选 GUI
 
-### 真机模式 (real)
+### 真机模式
 
 ```bash
 ros2 launch triarm_control triarm_control.launch.py mode:=real
 ```
 
-**特点**：
-- 控制真实机械臂
-- 需要硬件连接
-- 生产环境使用
+Real 模式下 unified_arm_node 会通过 TCP 连接 RM65 机械臂。
+
+### 单独启动节点
+
+```bash
+ros2 run triarm_control unified_arm
+ros2 run triarm_control gripper_bridge
+ros2 run triarm_control controller
+ros2 run triarm_control gui
+```
+
+---
+
+## 与上层状态机集成
+
+本 SDK 设计为被 `contact_graspnet_ros2` 状态机层调用。状态机通过 rm_driver 兼容话题控制臂和夹爪：
+
+```
+状态机 (ArmController)     → arm_a/rm_driver/movel_cmd    → unified_arm_node
+状态机 (GripperController) → arm_a/rm_driver/set_gripper_* → gripper_bridge
+状态机 (BaseController)    → /base_controller/rotate_cmd   → unified_arm_node (sim)
+```
+
+### 完整系统启动顺序
+
+1. 启动 Isaac Sim（发布 `/robot/joint_states`，消费 `/robot/joint_command`）
+2. 启动本 SDK：`ros2 launch triarm_control triarm_control.launch.py mode:=sim`
+3. 启动视觉服务：`ros2 launch contact_graspnet_ros2 grasp_hybrid_server.launch.py`
+4. 启动状态机：`ros2 run contact_graspnet_ros2 grasp_state_machine`
+5. 发送启动指令：`ros2 topic pub --once /state_machine/start std_msgs/Empty`
+
+---
+
+## Sim 模式工作原理
+
+### 正向数据流
+
+```
+状态机发送 movel_cmd
+  → unified_arm_node 收到 Pose
+  → SDK Algo IK 计算关节角度
+  → 更新 _shared_target[19] 对应索引
+  → 发布 /robot/target_joints (19关节, 度)
+  → controller_node 平滑插值
+  → 发布 /robot/joint_command (19关节, 度)
+  → Isaac Sim 执行
+```
+
+### 反馈数据流
+
+```
+Isaac Sim 发布 /robot/joint_states (19关节, 弧度)
+  → unified_arm_node._sim_state_cb 收到
+  → 拆分: positions[1:7] → ArmBridge:A, positions[7:13] → ArmBridge:B
+  → 到位检测: max(|current - target|) < 0.02 rad → 发布 movel_result=True
+  → FK 回算: 关节角度 → 末端 Pose → 发布 udp_arm_position
+  → D1 角度: positions[0] → 度 → 发布 /base_controller/current_angle
+```
+
+### 到位检测参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `sim_joint_tolerance` | 0.02 rad (≈1.15°) | 臂关节到位阈值 |
+| `sim_motion_timeout` | 10.0 s | 运动超时 |
+| D1 到位容差 | 0.5° | 底盘旋转到位阈值 |
+
+---
+
+## Real 模式工作原理
+
+### 臂控制
+
+```
+状态机发送 movel_cmd
+  → unified_arm_node 收到 Pose
+  → SDK TCP movel() 发送到 RM65
+  → RM65 执行运动
+  → SDK 查询关节状态 → 发布 joint_states + udp_arm_position
+  → 发布 movel_result
+```
+
+### 底盘控制
+
+Real 模式下底盘由外部独立控制器处理，不走 unified_arm_node。
+BaseController 仍通过 `/base_controller/rotate_cmd` 发送命令，由外部驱动响应。
+
+### 夹爪控制
+
+```
+状态机发送 set_gripper_pick_on_cmd
+  → gripper_bridge 收到
+  → SDK gripper_pick_on() 发送到 RM65
+  → 发布 result
+```
+
+---
+
+## GUI 使用
+
+GUI 分为 4 个标签页：平台 (D1)、机械臂 A (A1-A6)、机械臂 B (B1-B6)、机械臂 S (S1-S6)
+
+每个关节行包含：
+
+| 列 | 说明 |
+|----|------|
+| 关节 | 关节编号 |
+| 实时值 (蓝色) | 来自 Isaac Sim / 真机的当前位置 |
+| 指令值 (绿色) | 正在发送的控制指令 |
+| 滑块 | 拖动调节目标角度 |
+| 输入框 | 精确输入目标角度 |
+
+操作流程：
+1. 启动 GUI：`ros2 launch triarm_control triarm_control.launch.py with_gui:=true`
+2. 等待实时值显示数据
+3. 使用滑块或输入框设置目标角度
+4. 点击"执行"按钮
+5. 观察指令值逐渐接近目标
 
 ---
 
 ## 调试技巧
 
-### 查看话题列表
+### 查看话题
 
 ```bash
+# 列出所有话题
 ros2 topic list
+
+# 监控臂控制命令
+ros2 topic echo arm_a/rm_driver/movel_cmd
+
+# 监控臂运动结果
+ros2 topic echo arm_a/rm_driver/movel_result
+
+# 监控末端位姿反馈
+ros2 topic echo arm_a/rm_driver/udp_arm_position
+
+# 监控底盘角度
+ros2 topic echo /base_controller/current_angle
+
+# 监控 Isaac Sim 关节状态
+ros2 topic echo /robot/joint_states
 ```
 
-### 监控话题数据
+### 查看节点
 
 ```bash
-# 查看实时状态
-ros2 topic echo /joint_states
-
-# 查看控制指令
-ros2 topic echo /joint_command
-
-# 查看目标输入
-ros2 topic echo /target_joints
-```
-
-### 查看话题频率
-
-```bash
-# 查看发布频率
-ros2 topic hz /joint_command
-
-# 应该显示约50Hz
-```
-
-### 查看节点信息
-
-```bash
-# 列出所有节点
 ros2 node list
+# 应该看到:
+# /unified_arm_node
+# /gripper_bridge_node
+# /triarm_controller
+```
 
-# 查看节点详情
-ros2 node info /triarm_controller
+### 手动发送命令
+
+```bash
+# 底盘旋转到 90°
+ros2 topic pub --once /base_controller/rotate_cmd std_msgs/Float64 "data: 90.0"
+
+# 直接发送 19 关节目标 (度)
+ros2 topic pub --once /robot/target_joints std_msgs/Float64MultiArray \
+  "data: [0, 0,30,-20,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]"
 ```
 
 ### 日志级别
 
 ```bash
-# 启动时设置日志级别
-ros2 run triarm_control controller --ros-args --log-level debug
+ros2 run triarm_control unified_arm --ros-args --log-level debug
 ```
 
 ---
 
 ## 常见问题
 
-### Q1: GUI显示"等待数据..."
+### Q1: sim 模式下臂不动
 
-**原因**：未收到 `/joint_states` 消息
+检查：
+1. Isaac Sim 是否运行并发布 `/robot/joint_states`
+2. controller_node 是否运行：`ros2 node list | grep controller`
+3. 话题是否连通：`ros2 topic hz /robot/joint_command`
 
-**解决**：
-1. 检查Isaac Sim是否运行
-2. 检查话题：`ros2 topic list | grep joint_states`
-3. 检查数据：`ros2 topic echo /joint_states`
+### Q2: movel_result 一直不返回
 
-### Q2: 机械臂不动
+可能原因：
+- Isaac Sim 未发布 `/robot/joint_states`（sim 反馈闭环断开）
+- 目标位姿 IK 无解
+- 运动超时（默认 10s）
 
-**原因**：
-- 未启动controller_node
-- 未启动unified_arm_node
-- 目标位置与当前位置相同
+### Q3: 底盘旋转后角度不对
 
-**解决**：
+检查 `/base_controller/current_angle` 是否有数据：
 ```bash
-# 检查节点是否运行
-ros2 node list
-
-# 应该看到：
-# /triarm_controller
-# /unified_arm_node
+ros2 topic echo /base_controller/current_angle
 ```
+sim 模式下该话题由 unified_arm_node 从 Isaac Sim joint_states 的 D1 分量桥接。
 
-### Q3: 运动不平滑
+### Q4: real 模式连接失败
 
-**解决**：
-1. 启用平滑处理
-2. 降低速度模式
-3. 检查发布频率是否为50Hz
-
-### Q4: 关节超限
-
-**现象**：输入的角度被自动限制
-
-**说明**：这是正常的安全保护机制，每个关节都有限位
-
-**查看限位**：参考 `triarm_control/joint_names.py`
-
----
-
-## 性能优化
-
-### 提高响应速度
-
-```yaml
-# config/triarm_config.yaml
-publish_rate: 100.0  # 提高到100Hz
-```
-
-### 调整运动速度
-
-```yaml
-joint_velocity: 45.0  # 提高基准速度
-acceleration: 150.0   # 提高加速度
-```
-
-### 禁用平滑处理
-
-```yaml
-enable_smooth: false  # 使用线性插值
-```
-
-**注意**：禁用平滑可能导致抖动
+确认：
+1. RM65 机械臂已上电
+2. 网络连通：`ping 192.168.1.18`
+3. `Robotic_Arm` SDK 已安装：`pip install Robotic_Arm`
