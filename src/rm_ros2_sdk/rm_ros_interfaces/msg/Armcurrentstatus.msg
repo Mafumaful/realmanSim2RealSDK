@@ -1,1 +1,0 @@
-uint16 arm_current_status

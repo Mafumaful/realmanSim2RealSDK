@@ -11,8 +11,16 @@
   {arm_name}/joint_states (JointState反馈)
 
 双模式 (由 RealManSDKWrapper 内部路由):
-  sim: Pose → SDK Algo IK → 关节角度 → 映射到19关节数组 → 现有插值逻辑
+  sim: Pose → SDK Algo IK → 关节角度 → 映射到23关节数组 → 现有插值逻辑
   real: Pose → SDK TCP 直接控制 RM65
+
+23关节体系:
+  [0]     D1        (底盘)
+  [1-6]   A1-A6     (左臂)
+  [7-12]  B1-B6     (右臂)
+  [13-18] S1-S6     (头部)
+  [19-20] L1,L11    (左夹爪, 由 /gripper_target 更新)
+  [21-22] R1,R11    (右夹爪, 由 /gripper_target 更新)
 """
 
 import math
@@ -30,10 +38,11 @@ import transforms3d.quaternions as txq
 import transforms3d.euler as txe
 
 from .realman_sdk_wrapper import RealManSDKWrapper, SDKMotionResult
-from .joint_names import JOINT_NAMES_LIST
+from .joint_names import (JOINT_NAMES_LIST, TOTAL_JOINT_COUNT,
+                          ARM_JOINT_COUNT, GRIPPER_JOINT_INDICES)
 
 
-# 臂关节在19关节数组中的索引映射
+# 臂关节在23关节数组中的索引映射
 ARM_JOINT_INDICES = {
     'arm_a': list(range(1, 7)),    # A臂: index 1-6
     'arm_b': list(range(7, 13)),   # B臂: index 7-12
@@ -84,6 +93,11 @@ class ArmBridge:
         self._current_pose = Pose()
         self._lock = threading.Lock()
 
+        # 运动命令串行化锁 (同一时刻只允许一个运动执行)
+        self._motion_lock = threading.Lock()
+        # sim模式运动取消信号
+        self._stop_event = threading.Event()
+
         prefix = f'{arm_name}/'
 
         # ── 发布器: rm_driver 兼容结果话题 ──
@@ -122,12 +136,11 @@ class ArmBridge:
 
     def set_publish_target_fn(self, fn):
         """设置共享目标发布回调 (sim模式)
-        fn(indices, joints_rad) → 更新共享19关节数组并发布
+        fn(indices, joints_rad) → 更新共享23关节数组并发布
         """
         self._publish_shared_target = fn
 
     def connect_sdk(self) -> bool:
-        """连接SDK (内部根据mode自动路由)"""
         ok = self._sdk.connect()
         if ok:
             self.logger.info(f'{self._tag} SDK就绪')
@@ -154,40 +167,47 @@ class ArmBridge:
 
     def _on_stop(self, msg: Empty):
         self.logger.warn(f'{self._tag} 收到停止命令')
+        self._stop_event.set()  # 取消 sim 模式等待
         if self.mode == 'real':
             self._sdk.stop()
 
     # ─── 执行逻辑 ───
 
     def _exec_movel(self, msg: Movel):
-        x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
-        speed = msg.speed
-        if self.mode == 'real':
-            success = self._real_movel(x, y, z, rx, ry, rz, speed)
-        else:
-            success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
+            speed = msg.speed
+            if self.mode == 'real':
+                success = self._real_movel(x, y, z, rx, ry, rz, speed)
+            else:
+                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
         result = Bool()
         result.data = success
         self._movel_result_pub.publish(result)
 
     def _exec_movej(self, msg: Movej):
-        joints = list(msg.joint)
-        speed = msg.speed
-        if self.mode == 'real':
-            success = self._real_movej(joints, speed)
-        else:
-            success = self._sim_move_joints(joints)
+        with self._motion_lock:
+            self._stop_event.clear()
+            joints = list(msg.joint)
+            speed = msg.speed
+            if self.mode == 'real':
+                success = self._real_movej(joints, speed)
+            else:
+                success = self._sim_move_joints(joints)
         result = Bool()
         result.data = success
         self._movej_result_pub.publish(result)
 
     def _exec_movejp(self, msg: Movejp):
-        x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
-        speed = msg.speed
-        if self.mode == 'real':
-            success = self._real_movejp(x, y, z, rx, ry, rz, speed)
-        else:
-            success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
+            speed = msg.speed
+            if self.mode == 'real':
+                success = self._real_movejp(x, y, z, rx, ry, rz, speed)
+            else:
+                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
         result = Bool()
         result.data = success
         self._movejp_result_pub.publish(result)
@@ -214,7 +234,6 @@ class ArmBridge:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
 
-        # 用当前关节作为IK参考解
         with self._lock:
             q_ref = list(self._current_joints)
 
@@ -241,17 +260,19 @@ class ArmBridge:
                 f'indices={len(self._joint_indices)}, joints={len(joints)}')
             return False
 
-        # 通过共享回调更新臂关节并发布完整19关节数组
         self._publish_shared_target(self._joint_indices, joints)
 
         self.logger.info(
             f'{self._tag} sim发送关节目标: '
             f'{[f"{math.degrees(j):.1f}" for j in joints]}')
 
-        # 轮询等待关节到位
+        # 轮询等待关节到位 (可被 stop_event 取消)
         target = list(joints)
         start = time.time()
         while time.time() - start < self._sim_motion_timeout:
+            if self._stop_event.is_set():
+                self.logger.warn(f'{self._tag} sim运动被取消')
+                return False
             time.sleep(0.05)
             with self._lock:
                 current = list(self._current_joints)
@@ -267,6 +288,23 @@ class ArmBridge:
 
     # ─── 状态反馈 ───
 
+    @staticmethod
+    def _dict_to_pose(pose_dict) -> Pose:
+        """将 {x,y,z,rx,ry,rz} 字典转为 Pose 消息"""
+        pose = Pose()
+        pose.position.x = pose_dict['x']
+        pose.position.y = pose_dict['y']
+        pose.position.z = pose_dict['z']
+        R = txe.euler2mat(
+            pose_dict['rx'], pose_dict['ry'],
+            pose_dict['rz'], 'sxyz')
+        q = txq.mat2quat(R)
+        pose.orientation.w = float(q[0])
+        pose.orientation.x = float(q[1])
+        pose.orientation.y = float(q[2])
+        pose.orientation.z = float(q[3])
+        return pose
+
     def publish_state(self):
         """发布当前状态 (由定时器调用)"""
         if self.mode == 'real' and self._sdk.is_connected:
@@ -277,39 +315,16 @@ class ArmBridge:
 
             pose_dict = self._sdk.get_current_pose()
             if pose_dict:
-                pose = Pose()
-                pose.position.x = pose_dict['x']
-                pose.position.y = pose_dict['y']
-                pose.position.z = pose_dict['z']
-                R = txe.euler2mat(
-                    pose_dict['rx'], pose_dict['ry'],
-                    pose_dict['rz'], 'sxyz')
-                q = txq.mat2quat(R)
-                pose.orientation.w = float(q[0])
-                pose.orientation.x = float(q[1])
-                pose.orientation.y = float(q[2])
-                pose.orientation.z = float(q[3])
+                pose = self._dict_to_pose(pose_dict)
                 with self._lock:
                     self._current_pose = pose
 
         elif self.mode == 'sim' and self._sdk.is_ready:
-            # sim模式: FK 回算末端位姿
             with self._lock:
                 joints_copy = list(self._current_joints)
             pose_dict = self._sdk.forward_kinematics(joints_copy)
             if pose_dict:
-                pose = Pose()
-                pose.position.x = pose_dict['x']
-                pose.position.y = pose_dict['y']
-                pose.position.z = pose_dict['z']
-                R = txe.euler2mat(
-                    pose_dict['rx'], pose_dict['ry'],
-                    pose_dict['rz'], 'sxyz')
-                q = txq.mat2quat(R)
-                pose.orientation.w = float(q[0])
-                pose.orientation.x = float(q[1])
-                pose.orientation.y = float(q[2])
-                pose.orientation.z = float(q[3])
+                pose = self._dict_to_pose(pose_dict)
                 with self._lock:
                     self._current_pose = pose
 
@@ -325,7 +340,7 @@ class ArmBridge:
             self._arm_pos_pub.publish(self._current_pose)
 
     def update_joints_from_sim(self, joint_positions: list):
-        """从 /joint_states (Isaac Sim) 更新关节状态"""
+        """从 /joint_states (Isaac Sim) 更新臂关节状态"""
         with self._lock:
             for i, idx in enumerate(self._joint_indices):
                 if idx < len(joint_positions):
@@ -365,10 +380,11 @@ class UnifiedArmNode(Node):
         self._target_joints_pub = None
         self._base_angle_pub = None
 
-        # 共享19关节目标数组 (角度制, sim模式核心状态)
-        self._shared_target = [0.0] * 19
+        # 共享23关节目标数组 (角度制, sim模式核心状态)
+        self._shared_target = [0.0] * TOTAL_JOINT_COUNT
         self._shared_target_lock = threading.Lock()
-        self._current_d1_angle = 0.0  # D1当前角度 (度, 由_sim_state_cb更新)
+        self._d1_lock = threading.Lock()
+        self._current_d1_angle = 0.0
 
         if mode == 'sim':
             self._target_joints_pub = self.create_publisher(
@@ -383,7 +399,12 @@ class UnifiedArmNode(Node):
             self._rotate_result_pub = self.create_publisher(
                 Bool, '/base_controller/rotate_result', 10)
 
-        # 创建 A/B 臂桥接器 (SDK内部处理mode路由)
+            # 订阅 /gripper_target (来自 GripperController 或 gui_node)
+            self._gripper_target_sub = self.create_subscription(
+                Float64MultiArray, f'{prefix}gripper_target',
+                self._on_gripper_target, 10)
+
+        # 创建 A/B 臂桥接器
         self._bridges = {}
         for arm_name in ['arm_a', 'arm_b']:
             ip = self.get_parameter(f'{arm_name}.ip').value
@@ -399,7 +420,6 @@ class UnifiedArmNode(Node):
             bridge.connect_sdk()
             self._bridges[arm_name] = bridge
 
-        # S臂预留 (暂不创建)
         self.get_logger().info('S臂接口预留，暂未启用')
 
         # sim模式: 订阅 /joint_states 获取仿真反馈
@@ -416,14 +436,18 @@ class UnifiedArmNode(Node):
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
 
     def _sim_state_cb(self, msg: JointState):
+        """从 Isaac Sim /joint_states 更新所有关节状态 (含夹爪)"""
         positions = list(msg.position)
+
+        # 更新臂关节
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
-        # 底盘角度桥接: D1 (index 0) → /base_controller/current_angle
+        # 底盘角度桥接: D1 (index 0)
         if self._base_angle_pub and len(positions) > 0:
             d1_deg = math.degrees(positions[0])
-            self._current_d1_angle = d1_deg
+            with self._d1_lock:
+                self._current_d1_angle = d1_deg
             angle_msg = Float64()
             angle_msg.data = d1_deg
             self._base_angle_pub.publish(angle_msg)
@@ -431,7 +455,7 @@ class UnifiedArmNode(Node):
     # ─── 共享目标管理 (sim模式) ───
 
     def _update_and_publish_target(self, indices, joints_rad):
-        """更新共享19关节目标数组的指定部分并发布
+        """更新共享23关节目标数组的指定部分并发布
         Args:
             indices: 关节索引列表
             joints_rad: 对应的关节角度 (弧度)
@@ -444,6 +468,29 @@ class UnifiedArmNode(Node):
             msg = Float64MultiArray()
             msg.data = list(self._shared_target)
         self._target_joints_pub.publish(msg)
+
+    def _on_gripper_target(self, msg: Float64MultiArray):
+        """处理夹爪目标 (来自 gripper_bridge)
+        msg.data = [L1, L11, R1, R11] (弧度)
+        → 更新共享目标 [19-22] 并发布 /target_joints
+        """
+        if len(msg.data) != 4:
+            self.get_logger().warn(
+                f'gripper_target 数据长度错误: 需要4, 收到{len(msg.data)}')
+            return
+
+        if not self._target_joints_pub:
+            return
+
+        # 夹爪索引: arm_a=[19,20], arm_b=[21,22]
+        gripper_indices = (GRIPPER_JOINT_INDICES['arm_a'] +
+                           GRIPPER_JOINT_INDICES['arm_b'])
+        with self._shared_target_lock:
+            for idx, val in zip(gripper_indices, msg.data):
+                self._shared_target[idx] = math.degrees(val)
+            out = Float64MultiArray()
+            out.data = list(self._shared_target)
+        self._target_joints_pub.publish(out)
 
     def _on_rotate_cmd(self, msg: Float64):
         """sim模式: 处理底盘旋转命令 (D1)"""
@@ -459,19 +506,18 @@ class UnifiedArmNode(Node):
         self.get_logger().info(
             f'[D1] sim旋转命令: {target_angle}°')
 
-        # 更新D1到共享目标并发布
         with self._shared_target_lock:
             self._shared_target[D1_INDEX] = target_angle
             msg = Float64MultiArray()
             msg.data = list(self._shared_target)
         self._target_joints_pub.publish(msg)
 
-        # 轮询等待D1到位 (Isaac Sim反馈 → _sim_state_cb → _current_d1_angle)
         timeout = self._sim_motion_timeout
         start = time.time()
         while time.time() - start < timeout:
             time.sleep(0.1)
-            current = self._current_d1_angle
+            with self._d1_lock:
+                current = self._current_d1_angle
             if abs(current - target_angle) < POSITION_TOL:
                 self.get_logger().info(
                     f'[D1] sim旋转到位 ({current:.1f}°)')

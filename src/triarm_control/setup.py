@@ -17,7 +17,11 @@ setup(
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'transforms3d',
+        'minimalmodbus',
+    ],
     zip_safe=True,
     maintainer='user',
     maintainer_email='user@example.com',

@@ -6,16 +6,6 @@ triarm_controller:
     mode: "sim"             # 运行模式: sim (Isaac Sim) / real (真实机械臂)
     joint_velocity: 30.0    # 关节运动速度 (度/秒)
     publish_rate: 50.0      # 指令发布频率 (Hz)
-    enable_smooth: true     # 是否启用平滑处理
-    acceleration: 100.0     # 加速度限制 (度/秒²)
-    velocity_mode: "normal" # 速度模式: slow, normal, fast
-    # 夹爪参数
-    left_gripper:
-      open_angle: 0.0       # 打开角度 (度)
-      close_angle: -30.0    # 闭合角度 (度)
-    right_gripper:
-      open_angle: 0.0       # 打开角度 (度)
-      close_angle: -30.0    # 闭合角度 (度)
 
 # 统一机械臂节点配置
 unified_arm_node:
@@ -45,16 +35,19 @@ unified_arm_node:
 gripper_bridge_node:
   ros__parameters:
     mode: "sim"             # sim / real
-    sim_gripper_delay: 0.5  # sim夹爪动作模拟延时 (秒)
-    arm_a:
-      ip: "192.168.1.18"
-      port: 8080
-    arm_b:
-      ip: "192.168.1.19"
-      port: 8080
+    namespace: "robot"
+    # real 模式: Modbus RTU 串口配置 (crt_ctag2f90c)
+    gripper_a:
+      serial_port: "/dev/ttyUSB0"
+      baud_rate: 115200
+      slave_addr: 1
+    gripper_b:
+      serial_port: "/dev/ttyUSB1"
+      baud_rate: 115200
+      slave_addr: 1
 
 triarm_gui:
   ros__parameters:
     namespace: "robot"
     gui_width: 700
-    gui_height: 500
+    gui_height: 600
