@@ -28,7 +28,7 @@ class JointControlGUI(Node):
         super().__init__('triarm_gui')
 
         # 声明参数
-        self.declare_parameter('namespace', '')
+        self.declare_parameter('namespace', 'robot')
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 600)
 
@@ -168,9 +168,11 @@ class JointControlGUI(Node):
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
 
-        同时发布:
-        - /target_joints (23关节, sim模式 controller_node 使用)
-        - /gripper_target (4关节, sim: unified_arm_node 合并到 /target_joints; real: gripper_bridge → Modbus)
+        仅发布 /gripper_target (4关节):
+          sim:  unified_arm_node 合并到共享数组 → /target_joints → controller_node
+          real: gripper_bridge → Modbus RTU
+
+        不直接发布 /target_joints，避免与 unified_arm_node 的共享数组产生竞态。
         """
         angle_deg = math.degrees(angle_rad)
         neg_deg = math.degrees(-angle_rad)
@@ -189,11 +191,7 @@ class JointControlGUI(Node):
                     entry.delete(0, tk.END)
                     entry.insert(0, f'{deg:.1f}')
 
-        # 发布完整23关节目标 (sim: controller_node → Isaac Sim)
-        self._send_target()
-
-        # 同时发布 /gripper_target (real: gripper_bridge → Modbus)
-        # 从滑块读取另一侧当前值，避免覆盖归零
+        # 发布 /gripper_target，从滑块读取另一侧当前值避免覆盖归零
         gripper_data = [0.0] * 4  # [L1, L11, R1, R11]
         gripper_idx_to_slot = {19: 0, 20: 1, 21: 2, 22: 3}
         for s_idx, var, _, _ in self.sliders:

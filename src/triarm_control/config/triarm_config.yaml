@@ -19,17 +19,14 @@ unified_arm_node:
     arm_a:
       ip: "192.168.1.18"
       port: 8080
-      model: "RM_B"        # RM_65 标准版
     # B臂 (right)
     arm_b:
       ip: "192.168.1.19"
       port: 8080
-      model: "RM_B"
     # S臂 (预留)
     arm_s:
       ip: "192.168.1.20"
       port: 8080
-      model: "RM_B"
 
 # 夹爪桥接节点配置
 gripper_bridge_node:
@@ -45,6 +42,8 @@ gripper_bridge_node:
       serial_port: "/dev/ttyUSB1"
       baud_rate: 115200
       slave_addr: 1
+    # real 模式: Modbus 运动完成等待超时 (秒)
+    motion_timeout: 5.0
 
 triarm_gui:
   ros__parameters:

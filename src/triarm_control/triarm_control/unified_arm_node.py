@@ -331,8 +331,8 @@ class ArmBridge:
         js_msg = JointState()
         js_msg.header.stamp = self.node.get_clock().now().to_msg()
         with self._lock:
-            js_msg.name = [f'joint_{self.arm_name[-1]}{i+1}'
-                           for i in range(6)]
+            js_msg.name = [JOINT_NAMES_LIST[idx]
+                           for idx in self._joint_indices]
             js_msg.position = list(self._current_joints)
         self._joint_state_pub.publish(js_msg)
 
@@ -361,7 +361,7 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_b.port', 8080)
         self.declare_parameter('arm_s.ip', '192.168.1.20')
         self.declare_parameter('arm_s.port', 8080)
-        self.declare_parameter('namespace', '')
+        self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.02)
         self.declare_parameter('sim_motion_timeout', 10.0)
@@ -470,7 +470,7 @@ class UnifiedArmNode(Node):
         self._target_joints_pub.publish(msg)
 
     def _on_gripper_target(self, msg: Float64MultiArray):
-        """处理夹爪目标 (来自 gripper_bridge)
+        """处理夹爪目标 (来自 GripperController 或 gui_node)
         msg.data = [L1, L11, R1, R11] (弧度)
         → 更新共享目标 [19-22] 并发布 /target_joints
         """
