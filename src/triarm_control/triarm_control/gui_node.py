@@ -9,7 +9,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String, Bool
 
 try:
     import tkinter as tk
@@ -37,6 +37,9 @@ class JointControlGUI(Node):
         self.gui_width = self.get_parameter('gui_width').value
         self.gui_height = self.get_parameter('gui_height').value
 
+        # 从controller节点获取夹爪参数
+        self._load_gripper_params_from_controller()
+
         # 话题名称
         prefix = f'{ns}/' if ns else '/'
         state_topic = f'{prefix}joint_states'
@@ -57,6 +60,13 @@ class JointControlGUI(Node):
         # 发布夹爪目标 (供 gripper_bridge real模式 和 unified_arm_node sim模式 使用)
         gripper_topic = f'{prefix}gripper_target'
         self.gripper_target_pub = self.create_publisher(Float64MultiArray, gripper_topic, 10)
+
+        # 发布控制参数（用于动态修改）
+        self.smooth_pub = self.create_publisher(Bool, f'{prefix}enable_smooth', 10)
+        self.velocity_mode_pub = self.create_publisher(String, f'{prefix}velocity_mode', 10)
+
+        # 发布夹爪控制指令
+        self.gripper_pub = self.create_publisher(String, f'{prefix}gripper_control', 10)
 
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
@@ -94,14 +104,40 @@ class JointControlGUI(Node):
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(fill='x', padx=5, pady=5)
 
+        # 左侧：执行和归零按钮
         ttk.Button(btn_frame, text='执行',
                    command=self._send_target).pack(side='left', padx=5)
         ttk.Button(btn_frame, text='归零',
                    command=self._reset_all).pack(side='left', padx=5)
 
-        # 状态标签
+        # 中间：平滑处理勾选框
+        self.smooth_var = tk.BooleanVar(value=True)
+        smooth_check = ttk.Checkbutton(
+            btn_frame, text='平滑处理',
+            variable=self.smooth_var,
+            command=self._on_smooth_changed
+        )
+        smooth_check.pack(side='left', padx=15)
+
+        # 速度模式选择
+        ttk.Label(btn_frame, text='速度:').pack(side='left', padx=(15, 5))
+        self.velocity_mode = tk.StringVar(value='normal')
+        velocity_combo = ttk.Combobox(
+            btn_frame,
+            textvariable=self.velocity_mode,
+            values=['slow', 'normal', 'fast'],
+            state='readonly',
+            width=8
+        )
+        velocity_combo.pack(side='left', padx=5)
+        velocity_combo.bind('<<ComboboxSelected>>', self._on_velocity_changed)
+
+        # 右侧：状态标签
         self.status_label = ttk.Label(btn_frame, text='就绪', foreground='green')
         self.status_label.pack(side='right', padx=10)
+
+        # 夹爪控制区域
+        self._create_gripper_controls()
 
     def _add_header_row(self, parent):
         headers = [('关节', 6), ('实时值', 8), ('指令值', 8), ('滑块控制', 20), ('目标角度', 8)]
@@ -296,6 +332,198 @@ class JointControlGUI(Node):
             entry.insert(0, '0.0')
         for idx, var, _, _ in self.sliders:
             var.set(0.0)
+
+    def _on_smooth_changed(self):
+        """平滑处理勾选框变化"""
+        msg = Bool()
+        msg.data = self.smooth_var.get()
+        self.smooth_pub.publish(msg)
+        status = "启用" if msg.data else "禁用"
+        self.get_logger().info(f'平滑处理已{status}')
+
+    def _on_velocity_changed(self, event=None):
+        """速度模式变化"""
+        msg = String()
+        msg.data = self.velocity_mode.get()
+        self.velocity_mode_pub.publish(msg)
+        self.get_logger().info(f'速度模式: {msg.data}')
+
+    def _create_gripper_controls(self):
+        """创建夹爪控制区域（在普通页面底部）"""
+        gripper_frame = ttk.LabelFrame(self.root, text='夹爪控制', padding=10)
+        gripper_frame.pack(fill='x', padx=5, pady=5)
+
+        # 左夹爪控制
+        left_frame = ttk.Frame(gripper_frame)
+        left_frame.pack(side='left', padx=20)
+        ttk.Label(left_frame, text='左夹爪:', font=('', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
+
+        # 左夹爪按钮
+        btn_frame_left = ttk.Frame(left_frame)
+        btn_frame_left.grid(row=1, column=0, columnspan=2, pady=5)
+        ttk.Button(btn_frame_left, text='打开',
+                   command=lambda: self._send_gripper_command('left_open')).pack(side='left', padx=2)
+        ttk.Button(btn_frame_left, text='闭合',
+                   command=lambda: self._send_gripper_command('left_close')).pack(side='left', padx=2)
+
+        # 左夹爪角度设置
+        ttk.Label(left_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
+        self.left_open_entry = ttk.Entry(left_frame, width=8)
+        self.left_open_entry.insert(0, str(self.left_open_angle))
+        self.left_open_entry.grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Label(left_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
+        self.left_close_entry = ttk.Entry(left_frame, width=8)
+        self.left_close_entry.insert(0, str(self.left_close_angle))
+        self.left_close_entry.grid(row=3, column=1, padx=5, pady=2)
+
+        ttk.Button(left_frame, text='应用参数',
+                   command=lambda: self._update_gripper_params('left')).grid(row=4, column=0, columnspan=2, pady=5)
+
+        # 右夹爪控制
+        right_frame = ttk.Frame(gripper_frame)
+        right_frame.pack(side='left', padx=20)
+        ttk.Label(right_frame, text='右夹爪:', font=('', 10, 'bold')).grid(row=0, column=0, columnspan=2, pady=5)
+
+        # 右夹爪按钮
+        btn_frame_right = ttk.Frame(right_frame)
+        btn_frame_right.grid(row=1, column=0, columnspan=2, pady=5)
+        ttk.Button(btn_frame_right, text='打开',
+                   command=lambda: self._send_gripper_command('right_open')).pack(side='left', padx=2)
+        ttk.Button(btn_frame_right, text='闭合',
+                   command=lambda: self._send_gripper_command('right_close')).pack(side='left', padx=2)
+
+        # 右夹爪角度设置
+        ttk.Label(right_frame, text='打开角度:').grid(row=2, column=0, sticky='e', padx=5, pady=2)
+        self.right_open_entry = ttk.Entry(right_frame, width=8)
+        self.right_open_entry.insert(0, str(self.right_open_angle))
+        self.right_open_entry.grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Label(right_frame, text='闭合角度:').grid(row=3, column=0, sticky='e', padx=5, pady=2)
+        self.right_close_entry = ttk.Entry(right_frame, width=8)
+        self.right_close_entry.insert(0, str(self.right_close_angle))
+        self.right_close_entry.grid(row=3, column=1, padx=5, pady=2)
+
+        ttk.Button(right_frame, text='应用参数',
+                   command=lambda: self._update_gripper_params('right')).grid(row=4, column=0, columnspan=2, pady=5)
+
+    def _send_gripper_command(self, command: str):
+        """发送夹爪控制指令"""
+        msg = String()
+        msg.data = command
+        self.gripper_pub.publish(msg)
+        self.get_logger().info(f'发送夹爪指令: {command}')
+
+    def _load_gripper_params_from_controller(self):
+        """从controller节点获取夹爪参数"""
+        from rcl_interfaces.srv import GetParameters
+
+        # 默认值
+        self.left_open_angle = 0.0
+        self.left_close_angle = -30.0
+        self.right_open_angle = 0.0
+        self.right_close_angle = -30.0
+
+        try:
+            client = self.create_client(GetParameters, '/triarm_controller/get_parameters')
+            if not client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warn('controller参数服务不可用，使用默认夹爪参数')
+                return
+
+            request = GetParameters.Request()
+            request.names = [
+                'left_gripper.open_angle',
+                'left_gripper.close_angle',
+                'right_gripper.open_angle',
+                'right_gripper.close_angle'
+            ]
+
+            future = client.call_async(request)
+
+            # 等待结果
+            import time
+            start = time.time()
+            while not future.done() and (time.time() - start) < 2.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+
+            if future.done():
+                response = future.result()
+                if len(response.values) >= 4:
+                    self.left_open_angle = response.values[0].double_value
+                    self.left_close_angle = response.values[1].double_value
+                    self.right_open_angle = response.values[2].double_value
+                    self.right_close_angle = response.values[3].double_value
+                    self.get_logger().info(f'从controller加载夹爪参数: 左={self.left_close_angle}°, 右={self.right_close_angle}°')
+        except Exception as e:
+            self.get_logger().warn(f'获取controller参数失败: {e}，使用默认值')
+
+    def _update_gripper_params(self, side: str):
+        """更新夹爪参数（热加载）"""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+
+        try:
+            if side == 'left':
+                open_angle = float(self.left_open_entry.get())
+                close_angle = float(self.left_close_entry.get())
+
+                params = [
+                    Parameter(
+                        name='left_gripper.open_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
+                    ),
+                    Parameter(
+                        name='left_gripper.close_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
+                    )
+                ]
+                self.get_logger().info(f'更新左夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
+
+            elif side == 'right':
+                open_angle = float(self.right_open_entry.get())
+                close_angle = float(self.right_close_entry.get())
+
+                params = [
+                    Parameter(
+                        name='right_gripper.open_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
+                    ),
+                    Parameter(
+                        name='right_gripper.close_angle',
+                        value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
+                    )
+                ]
+                self.get_logger().info(f'更新右夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
+
+            # 创建服务客户端
+            client = self.create_client(SetParameters, '/triarm_controller/set_parameters')
+
+            if not client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn('参数服务不可用')
+                return
+
+            # 发送请求
+            request = SetParameters.Request()
+            request.parameters = params
+            future = client.call_async(request)
+
+            # 简单等待结果
+            import time
+            start = time.time()
+            while not future.done() and (time.time() - start) < 1.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+
+            if future.done():
+                response = future.result()
+                if response.results[0].successful:
+                    self.get_logger().info('参数更新成功')
+                else:
+                    self.get_logger().warn(f'参数更新失败: {response.results[0].reason}')
+
+        except ValueError:
+            self.get_logger().error('输入的角度值无效')
+        except Exception as e:
+            self.get_logger().error(f'更新参数时出错: {str(e)}')
 
     def run(self):
         def ros_spin():
