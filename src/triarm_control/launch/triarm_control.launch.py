@@ -34,15 +34,12 @@ def generate_launch_description():
         description='是否启动GUI界面'
     )
 
-    # 控制节点（仅 sim 模式启动，负责插值）
+    # 控制节点（始终启动，sim模式下负责插值）
     controller_node = Node(
         package='triarm_control',
         executable='controller',
         name='triarm_controller',
-        parameters=[config_file, {'mode': LaunchConfiguration('mode')}],
-        condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration('mode'), "' == 'sim'"])
-        )
+        parameters=[config_file, {'mode': LaunchConfiguration('mode')}]
     )
 
     # 统一机械臂节点（始终启动，桥接 rm_driver 话题）
