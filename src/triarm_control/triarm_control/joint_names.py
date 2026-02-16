@@ -86,9 +86,9 @@ JOINT_LIMITS = {
     'joint_platform_S4': (deg2rad(-88.8), deg2rad(88.8)),
     'joint_platform_S5': (deg2rad(-88.8), deg2rad(88.8)),
     'joint_platform_S6': (deg2rad(-171.9), deg2rad(171.9)),
-    # 夹爪: 0~1 rad (0=全开, 1=全闭)
-    'joint_L1':  (0.0, 1.0),
-    'joint_L11': (-1.0, 0.0),   # 与L1反向
-    'joint_R1':  (0.0, 1.0),
-    'joint_R11': (-1.0, 0.0),   # 与R1反向
+    # 夹爪: 0=全开, -30°=全闭 (Isaac Sim 实际范围)
+    'joint_L1':  (deg2rad(-30), 0.0),
+    'joint_L11': (0.0, deg2rad(30)),    # 与L1反向
+    'joint_R1':  (deg2rad(-30), 0.0),
+    'joint_R11': (0.0, deg2rad(30)),    # 与R1反向
 }

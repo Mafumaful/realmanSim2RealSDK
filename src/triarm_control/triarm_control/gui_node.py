@@ -152,18 +152,23 @@ class JointControlGUI(Node):
             min_deg, max_deg = math.degrees(limits[0]), math.degrees(limits[1])
             self._add_joint_row(frame, row, label, min_deg, max_deg, idx)
 
-        # 快捷按钮
+        # 快捷按钮 (角度从 JOINT_LIMITS 读取)
+        l_open = JOINT_LIMITS['joint_L1'][1]   # 0.0 rad
+        l_close = JOINT_LIMITS['joint_L1'][0]  # deg2rad(-30)
+        r_open = JOINT_LIMITS['joint_R1'][1]
+        r_close = JOINT_LIMITS['joint_R1'][0]
+
         quick_frame = ttk.LabelFrame(frame, text='快捷操作', padding=5)
         quick_frame.grid(row=6, column=0, columnspan=5, pady=10, padx=5, sticky='ew')
 
         ttk.Button(quick_frame, text='左夹爪打开',
-                   command=lambda: self._set_gripper('left', 0.0)).pack(side='left', padx=5)
+                   command=lambda: self._set_gripper('left', l_open)).pack(side='left', padx=5)
         ttk.Button(quick_frame, text='左夹爪闭合',
-                   command=lambda: self._set_gripper('left', 1.0)).pack(side='left', padx=5)
+                   command=lambda: self._set_gripper('left', l_close)).pack(side='left', padx=5)
         ttk.Button(quick_frame, text='右夹爪打开',
-                   command=lambda: self._set_gripper('right', 0.0)).pack(side='left', padx=15)
+                   command=lambda: self._set_gripper('right', r_open)).pack(side='left', padx=15)
         ttk.Button(quick_frame, text='右夹爪闭合',
-                   command=lambda: self._set_gripper('right', 1.0)).pack(side='left', padx=5)
+                   command=lambda: self._set_gripper('right', r_close)).pack(side='left', padx=5)
 
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送

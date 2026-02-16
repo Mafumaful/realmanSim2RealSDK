@@ -33,11 +33,15 @@ class TriarmControllerNode(Node):
         self.declare_parameter('acceleration', 100.0)
         self.declare_parameter('velocity_mode', 'normal')
 
-        # 夹爪参数
-        self.declare_parameter('left_gripper.open_angle', 0.0)
-        self.declare_parameter('left_gripper.close_angle', 30.0)
-        self.declare_parameter('right_gripper.open_angle', 0.0)
-        self.declare_parameter('right_gripper.close_angle', 30.0)
+        # 夹爪参数 (sim/real 分开配置, 单位: 度)
+        self.declare_parameter('left_gripper.sim_open_angle', 0.0)
+        self.declare_parameter('left_gripper.sim_close_angle', -30.0)
+        self.declare_parameter('left_gripper.real_open_angle', 0.0)
+        self.declare_parameter('left_gripper.real_close_angle', -30.0)
+        self.declare_parameter('right_gripper.sim_open_angle', 0.0)
+        self.declare_parameter('right_gripper.sim_close_angle', -30.0)
+        self.declare_parameter('right_gripper.real_open_angle', 0.0)
+        self.declare_parameter('right_gripper.real_close_angle', -30.0)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
@@ -48,11 +52,12 @@ class TriarmControllerNode(Node):
         acceleration = self.get_parameter('acceleration').value
         velocity_mode = self.get_parameter('velocity_mode').value
 
-        # 夹爪参数
-        self.left_open = self.get_parameter('left_gripper.open_angle').value
-        self.left_close = self.get_parameter('left_gripper.close_angle').value
-        self.right_open = self.get_parameter('right_gripper.open_angle').value
-        self.right_close = self.get_parameter('right_gripper.close_angle').value
+        # 夹爪参数 (按 mode 选择 sim/real)
+        _gp = 'sim' if mode == 'sim' else 'real'
+        self.left_open = self.get_parameter(f'left_gripper.{_gp}_open_angle').value
+        self.left_close = self.get_parameter(f'left_gripper.{_gp}_close_angle').value
+        self.right_open = self.get_parameter(f'right_gripper.{_gp}_open_angle').value
+        self.right_close = self.get_parameter(f'right_gripper.{_gp}_close_angle').value
 
         # 创建控制器
         self.controller = ArmController(
@@ -183,17 +188,20 @@ class TriarmControllerNode(Node):
         """参数热加载回调"""
         from rcl_interfaces.msg import SetParametersResult
 
+        mode = self.get_parameter('mode').value
+        _gp = 'sim' if mode == 'sim' else 'real'
+
         for param in params:
-            if param.name == 'left_gripper.open_angle':
+            if param.name == f'left_gripper.{_gp}_open_angle':
                 self.left_open = param.value
                 self.get_logger().info(f'更新左夹爪打开角度: {self.left_open}°')
-            elif param.name == 'left_gripper.close_angle':
+            elif param.name == f'left_gripper.{_gp}_close_angle':
                 self.left_close = param.value
                 self.get_logger().info(f'更新左夹爪闭合角度: {self.left_close}°')
-            elif param.name == 'right_gripper.open_angle':
+            elif param.name == f'right_gripper.{_gp}_open_angle':
                 self.right_open = param.value
                 self.get_logger().info(f'更新右夹爪打开角度: {self.right_open}°')
-            elif param.name == 'right_gripper.close_angle':
+            elif param.name == f'right_gripper.{_gp}_close_angle':
                 self.right_close = param.value
                 self.get_logger().info(f'更新右夹爪闭合角度: {self.right_close}°')
 
