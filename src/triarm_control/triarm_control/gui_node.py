@@ -556,7 +556,7 @@ class JointControlGUI(Node):
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        self.get_logger().info(f'FK原始返回类型: {type(ret)}, 值: {ret}')
+        self.get_logger().info(f'FK原始返回: {ret}')
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
             pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
@@ -565,23 +565,29 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        # 检查FK返回的位置范围判断单位
-        # RM65工作半径约0.65m，如果xyz都<1可能是米，>100可能是mm
-        max_pos = max(abs(pose_Bi_T[i]) for i in range(3))
-        if max_pos < 2:  # 米
-            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
-                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
-            self.get_logger().info(f'FK单位判断: 米 → 转mm')
-        else:  # 已经是mm
-            pose_Bi_T_mm = list(pose_Bi_T)
-            self.get_logger().info(f'FK单位判断: 已是mm')
-
-        # 用原始关节角度作为参考验证IK
+        # 测试：直接用FK返回值（不转换单位）做IK
         from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
-        params = rm_inverse_kinematics_params_t(joints_deg, pose_Bi_T_mm, 1)
-        ik_ret = algo.rm_algo_inverse_kinematics(params)
-        self.get_logger().info(f'IK返回: {ik_ret}')
-        ik_ok = isinstance(ik_ret, (list, tuple)) and ik_ret[0] == 0
+        params_raw = rm_inverse_kinematics_params_t(joints_deg, pose_Bi_T, 1)
+        ik_raw = algo.rm_algo_inverse_kinematics(params_raw)
+        self.get_logger().info(f'IK(原始单位): {ik_raw[0] if isinstance(ik_raw, tuple) else ik_raw}')
+
+        # 转mm后测试
+        pose_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
+                   pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+        params_mm = rm_inverse_kinematics_params_t(joints_deg, pose_mm, 1)
+        ik_mm = algo.rm_algo_inverse_kinematics(params_mm)
+        self.get_logger().info(f'IK(转mm): {ik_mm[0] if isinstance(ik_mm, tuple) else ik_mm}')
+
+        # 选择成功的那个
+        if isinstance(ik_raw, tuple) and ik_raw[0] == 0:
+            pose_Bi_T_mm = pose_Bi_T  # FK返回的就是mm
+            ik_ok = True
+        elif isinstance(ik_mm, tuple) and ik_mm[0] == 0:
+            pose_Bi_T_mm = pose_mm
+            ik_ok = True
+        else:
+            pose_Bi_T_mm = pose_mm
+            ik_ok = False
 
         # 世界坐标变换
         pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
