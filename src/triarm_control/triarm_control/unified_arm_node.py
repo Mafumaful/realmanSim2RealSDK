@@ -226,15 +226,16 @@ class ArmBridge:
         self.logger.info(f'{self._tag} D1角度={d1_deg:.1f}°')
 
         # 1. 平台当前位姿 (绕Z轴旋转, 顺时针为负)
-        # pose_move: 位置m, delta角度deg
+        # pose_move: 位置mm, delta角度deg
+        pose_W_P0_mm = self._pose_m_to_mm(self._pose_W_P0)
         delta = [0, 0, 0, 0, 0, -d1_deg]
-        pose_W_P = algo.pose_move(self._pose_W_P0, delta, 1)
-        if pose_W_P is None:
+        pose_W_P_mm = algo.pose_move(pose_W_P0_mm, delta, 1)
+        if pose_W_P_mm is None:
             self.logger.warn(f'{self._tag} pose_move失败')
             return None
 
         # 2. 位姿转矩阵 (pos2matrix需要mm)
-        T_W_P = algo.pos2matrix(self._pose_m_to_mm(pose_W_P))
+        T_W_P = algo.pos2matrix(pose_W_P_mm)
         T_P_Bi = algo.pos2matrix(self._pose_m_to_mm(self._pose_P_Bi))
         if T_W_P is None or T_P_Bi is None:
             self.logger.warn(f'{self._tag} pos2matrix失败: T_W_P={T_W_P is not None}, T_P_Bi={T_P_Bi is not None}')
