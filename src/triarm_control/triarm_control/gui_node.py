@@ -565,32 +565,18 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        # 测试：直接用FK返回值（不转换单位）做IK
-        from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
-        params_raw = rm_inverse_kinematics_params_t(joints_deg, pose_Bi_T, 1)
-        ik_raw = algo.rm_algo_inverse_kinematics(params_raw)
-        self.get_logger().info(f'IK(原始单位): {ik_raw[0] if isinstance(ik_raw, tuple) else ik_raw}')
-
-        # 转mm后测试
+        # 转mm
         pose_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
                    pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+
+        # 验证IK
+        from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
         params_mm = rm_inverse_kinematics_params_t(joints_deg, pose_mm, 1)
-        ik_mm = algo.rm_algo_inverse_kinematics(params_mm)
-        self.get_logger().info(f'IK(转mm): {ik_mm[0] if isinstance(ik_mm, tuple) else ik_mm}')
+        ik_ret = algo.rm_algo_inverse_kinematics(params_mm)
+        ik_ok = isinstance(ik_ret, tuple) and ik_ret[0] == 0
 
-        # 选择成功的那个
-        if isinstance(ik_raw, tuple) and ik_raw[0] == 0:
-            pose_Bi_T_mm = pose_Bi_T  # FK返回的就是mm
-            ik_ok = True
-        elif isinstance(ik_mm, tuple) and ik_mm[0] == 0:
-            pose_Bi_T_mm = pose_mm
-            ik_ok = True
-        else:
-            pose_Bi_T_mm = pose_mm
-            ik_ok = False
-
-        # 世界坐标变换
-        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
+        # 世界坐标变换 (输入mm)
+        pose_W_T = self._base_to_world(algo, arm, pose_mm)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
             return
