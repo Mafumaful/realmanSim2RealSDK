@@ -80,6 +80,11 @@ class JointControlGUI(Node):
             'arm_b': self.create_publisher(Movejp, 'arm_b/rm_driver/movej_p_cmd', 10),
         }
 
+        # 订阅运动结果
+        for arm in ['arm_a', 'arm_b']:
+            self.create_subscription(Bool, f'{arm}/rm_driver/movel_result', self._on_move_result, 10)
+            self.create_subscription(Bool, f'{arm}/rm_driver/movej_p_result', self._on_move_result, 10)
+
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
@@ -285,6 +290,10 @@ class JointControlGUI(Node):
         btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
         ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
+
+        # 状态标签
+        self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
+        self.world_pose_status.grid(row=5, column=0, columnspan=6, pady=10)
 
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
@@ -502,7 +511,15 @@ class JointControlGUI(Node):
         else:
             msg = Movejp(pose=pose, speed=speed)
             self.movejp_pubs[arm].publish(msg)
+        self.world_pose_status.config(text='执行中...', foreground='orange')
         self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
+
+    def _on_move_result(self, msg: Bool):
+        """处理运动结果"""
+        if msg.data:
+            self.world_pose_status.config(text='执行成功', foreground='green')
+        else:
+            self.world_pose_status.config(text='求解失败或超时', foreground='red')
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""
