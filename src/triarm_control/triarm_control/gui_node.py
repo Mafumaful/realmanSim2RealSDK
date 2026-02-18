@@ -543,11 +543,11 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        # 处理不同返回格式
-        if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
+        # 返回格式: 直接是 [x,y,z,rx,ry,rz] 列表
+        if isinstance(ret, (list, tuple)) and len(ret) == 6:
+            pose = ret
+        elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
             pose = ret[1]
-        elif hasattr(ret, 'pose'):
-            pose = ret.pose
         else:
             self.world_pose_status.config(text=f'FK失败: {ret}', foreground='red')
             return
