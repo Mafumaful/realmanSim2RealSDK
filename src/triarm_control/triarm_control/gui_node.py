@@ -590,23 +590,31 @@ class JointControlGUI(Node):
         from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
         import ctypes
 
-        # 从标定参数获取变换
+        # 从标定参数获取变换 (平台到臂基座)
         pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
         pose_P_Bi_mm = [pose_P_Bi[0]*1000, pose_P_Bi[1]*1000, pose_P_Bi[2]*1000,
                        pose_P_Bi[3], pose_P_Bi[4], pose_P_Bi[5]]
 
-        # pos2matrix 返回 rm_matrix_t 对象
-        ret1 = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
-        ret2 = algo.rm_algo_pos2matrix(pose_Bi_T)
+        # 获取当前D1角度，计算平台在世界系中的位姿
+        d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
+        # pose_W_P0 = [0,0,0,0,0,0], 绕Z轴旋转-d1_deg
+        pose_W_P_mm = [0, 0, 0, 0, 0, math.radians(-d1_deg)]
+
+        # pos2matrix
+        ret_wp = algo.rm_algo_pos2matrix(pose_W_P_mm)
+        ret_pb = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
+        ret_bt = algo.rm_algo_pos2matrix(pose_Bi_T)
 
         try:
-            T_W_Bi = list(ret1.data)
-            T_Bi_T = list(ret2.data)
+            T_W_P = list(ret_wp.data)
+            T_P_Bi = list(ret_pb.data)
+            T_Bi_T = list(ret_bt.data)
         except Exception as e:
             self.get_logger().error(f'矩阵提取失败: {e}')
             return None
 
-        # T_W_T = T_W_Bi × T_Bi_T
+        # T_W_T = T_W_P × T_P_Bi × T_Bi_T
+        T_W_Bi = matrix_multiply(T_W_P, T_P_Bi)
         T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
 
         # 创建 rm_matrix_t 对象
