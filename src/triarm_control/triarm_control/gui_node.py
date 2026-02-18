@@ -290,6 +290,7 @@ class JointControlGUI(Node):
         btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
         ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
 
         # 状态标签
         self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
@@ -512,6 +513,7 @@ class JointControlGUI(Node):
             msg = Movejp(pose=pose, speed=speed)
             self.movejp_pubs[arm].publish(msg)
         self.world_pose_status.config(text='执行中...', foreground='orange')
+        self._last_target_pose = vals  # 记录目标位姿
         self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
 
     def _on_move_result(self, msg: Bool):
@@ -519,7 +521,37 @@ class JointControlGUI(Node):
         if msg.data:
             self.world_pose_status.config(text='执行成功', foreground='green')
         else:
-            self.world_pose_status.config(text='求解失败或超时', foreground='red')
+            vals = getattr(self, '_last_target_pose', [0]*6)
+            self.world_pose_status.config(
+                text=f'求解失败 xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] rpy=[{vals[3]:.2f},{vals[4]:.2f},{vals[5]:.2f}]',
+                foreground='red')
+
+    def _gen_random_reachable(self):
+        """随机生成可达点 (通过FK)"""
+        import random
+        from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
+        try:
+            algo = Algo(rm_robot_arm_model_e.RM_MODEL_RM_65_E, rm_force_type_e.RM_MODEL_RM_B_E)
+        except:
+            self.world_pose_status.config(text='Algo初始化失败', foreground='red')
+            return
+        # 从 joint_names 获取关节限位 (A臂为例)
+        arm_joints = ['joint_platform_A1', 'joint_platform_A2', 'joint_platform_A3',
+                      'joint_platform_A4', 'joint_platform_A5', 'joint_platform_A6']
+        joints_deg = []
+        for name in arm_joints:
+            lo, hi = JOINT_LIMITS[name]
+            joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
+        ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
+        if ret[0] != 0:
+            self.world_pose_status.config(text='FK失败', foreground='red')
+            return
+        pose = ret[1]
+        vals = [pose[0]/1000, pose[1]/1000, pose[2]/1000, pose[3], pose[4], pose[5]]
+        for i, e in enumerate(self.world_pose_entries):
+            e.delete(0, tk.END)
+            e.insert(0, f'{vals[i]:.4f}')
+        self.world_pose_status.config(text='已生成随机可达点', foreground='blue')
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""
