@@ -29,6 +29,33 @@ class SDKMotionResult(Enum):
     IK_FAILED = 4
 
 
+def matrix_multiply(A, B):
+    """4x4矩阵乘法 (16元素列表)"""
+    result = [0.0] * 16
+    for i in range(4):
+        for j in range(4):
+            for k in range(4):
+                result[i * 4 + j] += A[i * 4 + k] * B[k * 4 + j]
+    return result
+
+
+def matrix_inverse(M):
+    """4x4齐次变换矩阵求逆 (16元素列表)"""
+    # R^T
+    R_T = [
+        M[0], M[4], M[8], 0,
+        M[1], M[5], M[9], 0,
+        M[2], M[6], M[10], 0,
+        0, 0, 0, 1
+    ]
+    # -R^T * t
+    tx = -(R_T[0]*M[3] + R_T[1]*M[7] + R_T[2]*M[11])
+    ty = -(R_T[4]*M[3] + R_T[5]*M[7] + R_T[6]*M[11])
+    tz = -(R_T[8]*M[3] + R_T[9]*M[7] + R_T[10]*M[11])
+    R_T[3], R_T[7], R_T[11] = tx, ty, tz
+    return R_T
+
+
 class RealManAlgo:
     """RealMan 算法库封装 - SDK内部IK/FK解算引擎
 
@@ -108,6 +135,48 @@ class RealManAlgo:
                 return None
             except Exception as e:
                 print(f'[Algo] IK异常: {e}')
+                return None
+
+    def pos2matrix(self, pose: List[float]) -> Optional[List[float]]:
+        """位姿转4x4矩阵 (16元素列表)"""
+        if not self._initialized:
+            return None
+        with self._lock:
+            try:
+                result = self._algo.rm_algo_pos2matrix(pose)
+                if isinstance(result, (list, tuple)) and result[0] == 0:
+                    return list(result[1])
+                return None
+            except Exception as e:
+                print(f'[Algo] pos2matrix异常: {e}')
+                return None
+
+    def matrix2pos(self, matrix: List[float], flag: int = 1) -> Optional[List[float]]:
+        """矩阵转位姿"""
+        if not self._initialized:
+            return None
+        with self._lock:
+            try:
+                result = self._algo.rm_algo_matrix2pos(matrix, flag)
+                if isinstance(result, (list, tuple)) and result[0] == 0:
+                    return list(result[1])
+                return None
+            except Exception as e:
+                print(f'[Algo] matrix2pos异常: {e}')
+                return None
+
+    def pose_move(self, pose: List[float], delta: List[float], mode: int = 1) -> Optional[List[float]]:
+        """位姿叠加 (delta角度单位为度)"""
+        if not self._initialized:
+            return None
+        with self._lock:
+            try:
+                result = self._algo.rm_algo_pose_move(pose, delta, mode)
+                if isinstance(result, (list, tuple)) and result[0] == 0:
+                    return list(result[1])
+                return None
+            except Exception as e:
+                print(f'[Algo] pose_move异常: {e}')
                 return None
 
     def forward_kinematics(
@@ -320,7 +389,8 @@ class RealManSDKWrapper:
         else:
             q_ref_deg = [0.0] * 6
 
-        target_pose = [x, y, z, rx, ry, rz]
+        # SDK Algo 期望位置单位为毫米，输入为米，需要转换
+        target_pose = [x * 1000, y * 1000, z * 1000, rx, ry, rz]
         result_deg = self._algo.inverse_kinematics(
             q_ref_deg, target_pose, flag=1)
 

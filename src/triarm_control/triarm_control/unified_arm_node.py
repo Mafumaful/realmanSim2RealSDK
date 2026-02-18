@@ -26,6 +26,7 @@
 import math
 import time
 import threading
+from typing import List, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +38,8 @@ from rm_ros_interfaces.msg import Movel, Movej, Movejp
 import transforms3d.quaternions as txq
 import transforms3d.euler as txe
 
-from .realman_sdk_wrapper import RealManSDKWrapper, SDKMotionResult
+from .realman_sdk_wrapper import (RealManSDKWrapper, SDKMotionResult,
+                                  matrix_multiply, matrix_inverse)
 from .joint_names import (JOINT_NAMES_LIST, TOTAL_JOINT_COUNT,
                           ARM_JOINT_COUNT, GRIPPER_JOINT_INDICES)
 
@@ -75,7 +77,9 @@ class ArmBridge:
     def __init__(self, node: Node, arm_name: str, mode: str,
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
-                 sim_motion_timeout: float = 10.0):
+                 sim_motion_timeout: float = 10.0,
+                 pose_W_P0: List[float] = None,
+                 pose_P_Bi: List[float] = None):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -85,6 +89,10 @@ class ArmBridge:
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
 
+        # 坐标变换参数 (mm + rad)
+        self._pose_W_P0 = pose_W_P0 or [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self._pose_P_Bi = pose_P_Bi or [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(ip, port, arm_id, mode=mode)
 
@@ -92,6 +100,9 @@ class ArmBridge:
         self._current_joints = [0.0] * 6  # 6关节弧度
         self._current_pose = Pose()
         self._lock = threading.Lock()
+
+        # D1角度回调 (由外部设置)
+        self._get_d1_angle = None
 
         # 运动命令串行化锁 (同一时刻只允许一个运动执行)
         self._motion_lock = threading.Lock()
@@ -140,6 +151,10 @@ class ArmBridge:
         """
         self._publish_shared_target = fn
 
+    def set_d1_angle_fn(self, fn):
+        """设置D1角度获取回调 fn() → d1_angle_deg"""
+        self._get_d1_angle = fn
+
     def connect_sdk(self) -> bool:
         ok = self._sdk.connect()
         if ok:
@@ -170,6 +185,62 @@ class ArmBridge:
         self._stop_event.set()  # 取消 sim 模式等待
         if self.mode == 'real':
             self._sdk.stop()
+
+    # ─── 坐标变换 ───
+
+    def _pose_m_to_mm(self, pose):
+        """位姿单位转换: m → mm (仅位置部分)"""
+        return [pose[0]*1000, pose[1]*1000, pose[2]*1000, pose[3], pose[4], pose[5]]
+
+    def world_pose_to_joints(self, x, y, z, rx, ry, rz) -> Optional[List[float]]:
+        """世界坐标系位姿 → 臂关节角度 (弧度)
+
+        输入: x,y,z (m), rx,ry,rz (rad)
+        """
+        algo = self._sdk._algo
+        if not algo.is_ready:
+            return None
+
+        # 获取D1角度
+        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+
+        # 1. 平台当前位姿 (绕Z轴旋转, 顺时针为负)
+        # pose_move: 位置m, delta角度deg
+        delta = [0, 0, 0, 0, 0, -d1_deg]
+        pose_W_P = algo.pose_move(self._pose_W_P0, delta, 1)
+        if pose_W_P is None:
+            return None
+
+        # 2. 位姿转矩阵 (pos2matrix需要mm)
+        T_W_P = algo.pos2matrix(self._pose_m_to_mm(pose_W_P))
+        T_P_Bi = algo.pos2matrix(self._pose_m_to_mm(self._pose_P_Bi))
+        if T_W_P is None or T_P_Bi is None:
+            return None
+
+        # 3. 臂基座在世界系下的变换
+        T_W_Bi = matrix_multiply(T_W_P, T_P_Bi)
+
+        # 4. 世界目标转臂坐标系
+        pose_W_T_mm = [x * 1000, y * 1000, z * 1000, rx, ry, rz]
+        T_W_T = algo.pos2matrix(pose_W_T_mm)
+        if T_W_T is None:
+            return None
+        T_Bi_T = matrix_multiply(matrix_inverse(T_W_Bi), T_W_T)
+
+        # 5. 矩阵转位姿 (输出mm)
+        pose_Bi_T = algo.matrix2pos(T_Bi_T, 1)
+        if pose_Bi_T is None:
+            return None
+
+        # 6. IK解算 (输入mm)
+        with self._lock:
+            q_ref = list(self._current_joints)
+        q_ref_deg = [math.degrees(q) for q in q_ref]
+        joints_deg = algo.inverse_kinematics(q_ref_deg, pose_Bi_T, 1)
+        if joints_deg is None:
+            return None
+
+        return [math.radians(d) for d in joints_deg]
 
     # ─── 执行逻辑 ───
 
@@ -229,17 +300,12 @@ class ArmBridge:
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: Pose → SDK IK解算 → 关节角度 → /target_joints"""
+        """sim模式: 世界坐标系Pose → 坐标变换 → IK → 关节角度 → /target_joints"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
 
-        with self._lock:
-            q_ref = list(self._current_joints)
-
-        joints = self._sdk.inverse_kinematics(
-            x, y, z, rx, ry, rz, q_ref=q_ref)
-
+        joints = self.world_pose_to_joints(x, y, z, rx, ry, rz)
         if joints is None:
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
@@ -365,12 +431,18 @@ class UnifiedArmNode(Node):
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.02)
         self.declare_parameter('sim_motion_timeout', 10.0)
+        # 坐标变换参数 (m + rad)
+        self.declare_parameter('pose_W_P0', [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter('pose_P_arm_a', [0.0, 0.15, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter('pose_P_arm_b', [0.0, -0.15, 0.0, 0.0, 0.0, 3.14159])
+        self.declare_parameter('pose_P_arm_s', [-0.15, 0.0, 0.2, 0.0, 0.0, 1.5708])
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
         rate = self.get_parameter('publish_rate').value
         self._sim_joint_tol = self.get_parameter('sim_joint_tolerance').value
         self._sim_motion_timeout = self.get_parameter('sim_motion_timeout').value
+        pose_W_P0 = list(self.get_parameter('pose_W_P0').value)
 
         self.get_logger().info(f'=== UnifiedArmNode 启动 (mode={mode}) ===')
 
@@ -410,13 +482,17 @@ class UnifiedArmNode(Node):
             ip = self.get_parameter(f'{arm_name}.ip').value
             port = self.get_parameter(f'{arm_name}.port').value
             arm_id = arm_name[-1].upper()
+            pose_P_Bi = list(self.get_parameter(f'pose_P_{arm_name}').value)
 
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
                 sim_joint_tol=self._sim_joint_tol,
-                sim_motion_timeout=self._sim_motion_timeout)
+                sim_motion_timeout=self._sim_motion_timeout,
+                pose_W_P0=pose_W_P0,
+                pose_P_Bi=pose_P_Bi)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
+                bridge.set_d1_angle_fn(self._get_d1_angle)
             bridge.connect_sdk()
             self._bridges[arm_name] = bridge
 
@@ -453,6 +529,11 @@ class UnifiedArmNode(Node):
             self._base_angle_pub.publish(angle_msg)
 
     # ─── 共享目标管理 (sim模式) ───
+
+    def _get_d1_angle(self) -> float:
+        """获取当前D1角度 (度)"""
+        with self._d1_lock:
+            return self._current_d1_angle
 
     def _update_and_publish_target(self, indices, joints_rad):
         """更新共享23关节目标数组的指定部分并发布

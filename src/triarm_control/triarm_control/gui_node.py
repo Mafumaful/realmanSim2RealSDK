@@ -18,6 +18,8 @@ try:
 except ImportError:
     HAS_TK = False
 
+from rm_ros_interfaces.msg import Movel, Movejp
+from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
 
 
@@ -68,6 +70,16 @@ class JointControlGUI(Node):
         # 发布夹爪控制指令
         self.gripper_pub = self.create_publisher(String, f'{prefix}gripper_control', 10)
 
+        # 发布 MoveL/MoveJP 命令
+        self.movel_pubs = {
+            'arm_a': self.create_publisher(Movel, 'arm_a/rm_driver/movel_cmd', 10),
+            'arm_b': self.create_publisher(Movel, 'arm_b/rm_driver/movel_cmd', 10),
+        }
+        self.movejp_pubs = {
+            'arm_a': self.create_publisher(Movejp, 'arm_a/rm_driver/movej_p_cmd', 10),
+            'arm_b': self.create_publisher(Movejp, 'arm_b/rm_driver/movej_p_cmd', 10),
+        }
+
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
@@ -96,6 +108,8 @@ class JointControlGUI(Node):
         self._create_arm_tab(notebook, 'B', 7)
         self._create_arm_tab(notebook, 'S', 13)
         self._create_gripper_tab(notebook)
+        self._create_calibration_tab(notebook)
+        self._create_world_pose_tab(notebook)
 
         # 按钮区域
         self._create_buttons()
@@ -205,6 +219,69 @@ class JointControlGUI(Node):
                    command=lambda: self._set_gripper('right', r_open)).pack(side='left', padx=15)
         ttk.Button(quick_frame, text='右夹爪闭合',
                    command=lambda: self._set_gripper('right', r_close)).pack(side='left', padx=5)
+
+    def _create_calibration_tab(self, notebook):
+        """创建坐标标定标签页"""
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text='坐标标定')
+
+        # 标定参数输入
+        self.calib_entries = {}
+        arms = [('arm_a', 'A臂'), ('arm_b', 'B臂'), ('arm_s', 'S臂')]
+        labels = ['x(m)', 'y(m)', 'z(m)', 'rx(rad)', 'ry(rad)', 'rz(rad)']
+
+        for row, (arm_key, arm_name) in enumerate(arms):
+            ttk.Label(frame, text=arm_name, font=('', 10, 'bold')).grid(
+                row=row*2, column=0, padx=5, pady=(10,0), sticky='w')
+            entry_frame = ttk.Frame(frame)
+            entry_frame.grid(row=row*2+1, column=0, columnspan=7, padx=5, pady=2, sticky='w')
+            self.calib_entries[arm_key] = []
+            for col, lbl in enumerate(labels):
+                ttk.Label(entry_frame, text=lbl).grid(row=0, column=col*2, padx=2)
+                e = ttk.Entry(entry_frame, width=8)
+                e.insert(0, '0.0')
+                e.grid(row=0, column=col*2+1, padx=2)
+                self.calib_entries[arm_key].append(e)
+
+        # 按钮
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=7, column=0, columnspan=7, pady=15)
+        ttk.Button(btn_frame, text='加载当前参数', command=self._load_calib_params).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text='应用参数', command=self._apply_calib_params).pack(side='left', padx=5)
+
+    def _create_world_pose_tab(self, notebook):
+        """创建世界坐标位姿输入标签页"""
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text='世界坐标')
+
+        # 臂选择
+        ttk.Label(frame, text='目标臂:').grid(row=0, column=0, padx=5, pady=10)
+        self.target_arm_var = tk.StringVar(value='arm_a')
+        ttk.Radiobutton(frame, text='A臂', variable=self.target_arm_var, value='arm_a').grid(row=0, column=1)
+        ttk.Radiobutton(frame, text='B臂', variable=self.target_arm_var, value='arm_b').grid(row=0, column=2)
+
+        # 位姿输入
+        labels = ['x(m)', 'y(m)', 'z(m)', 'rx(rad)', 'ry(rad)', 'rz(rad)']
+        defaults = ['0.3', '0.0', '0.4', '0.0', '3.14', '0.0']
+        self.world_pose_entries = []
+        for col, (lbl, val) in enumerate(zip(labels, defaults)):
+            ttk.Label(frame, text=lbl).grid(row=1, column=col, padx=5, pady=5)
+            e = ttk.Entry(frame, width=10)
+            e.insert(0, val)
+            e.grid(row=2, column=col, padx=5)
+            self.world_pose_entries.append(e)
+
+        # 速度
+        ttk.Label(frame, text='速度:').grid(row=3, column=0, pady=10)
+        self.move_speed_entry = ttk.Entry(frame, width=6)
+        self.move_speed_entry.insert(0, '20')
+        self.move_speed_entry.grid(row=3, column=1)
+
+        # 按钮
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
+        ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
 
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
@@ -337,6 +414,73 @@ class JointControlGUI(Node):
             entry.insert(0, '0.0')
         for idx, var, _, _ in self.sliders:
             var.set(0.0)
+
+    def _load_calib_params(self):
+        """从unified_arm_node加载标定参数"""
+        from rcl_interfaces.srv import GetParameters
+        client = self.create_client(GetParameters, '/unified_arm_node/get_parameters')
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('unified_arm_node参数服务不可用')
+            return
+        request = GetParameters.Request()
+        request.names = ['pose_P_arm_a', 'pose_P_arm_b', 'pose_P_arm_s']
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        if future.done():
+            resp = future.result()
+            for i, arm in enumerate(['arm_a', 'arm_b', 'arm_s']):
+                if i < len(resp.values) and resp.values[i].double_array_value:
+                    vals = resp.values[i].double_array_value
+                    for j, e in enumerate(self.calib_entries[arm]):
+                        e.delete(0, tk.END)
+                        e.insert(0, f'{vals[j]:.4f}' if j < len(vals) else '0.0')
+            self.get_logger().info('标定参数已加载')
+
+    def _apply_calib_params(self):
+        """应用标定参数到unified_arm_node"""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+        client = self.create_client(SetParameters, '/unified_arm_node/set_parameters')
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('unified_arm_node参数服务不可用')
+            return
+        params = []
+        for arm in ['arm_a', 'arm_b', 'arm_s']:
+            vals = [float(e.get()) for e in self.calib_entries[arm]]
+            params.append(Parameter(
+                name=f'pose_P_{arm}',
+                value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE_ARRAY, double_array_value=vals)))
+        request = SetParameters.Request(parameters=params)
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        self.get_logger().info('标定参数已应用')
+
+    def _send_world_pose(self, mode: str):
+        """发送世界坐标系位姿命令"""
+        try:
+            vals = [float(e.get()) for e in self.world_pose_entries]
+            speed = int(self.move_speed_entry.get())
+        except ValueError:
+            self.get_logger().error('位姿或速度输入无效')
+            return
+        arm = self.target_arm_var.get()
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = vals[0], vals[1], vals[2]
+        # 欧拉角转四元数
+        import transforms3d.euler as txe
+        import transforms3d.quaternions as txq
+        R = txe.euler2mat(vals[3], vals[4], vals[5], 'sxyz')
+        q = txq.mat2quat(R)
+        pose.orientation.w, pose.orientation.x = float(q[0]), float(q[1])
+        pose.orientation.y, pose.orientation.z = float(q[2]), float(q[3])
+
+        if mode == 'movel':
+            msg = Movel(pose=pose, speed=speed)
+            self.movel_pubs[arm].publish(msg)
+        else:
+            msg = Movejp(pose=pose, speed=speed)
+            self.movejp_pubs[arm].publish(msg)
+        self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""
