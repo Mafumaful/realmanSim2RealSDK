@@ -622,8 +622,9 @@ class JointControlGUI(Node):
 
         # 获取当前D1角度，计算平台在世界系中的位姿
         d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
-        # pose_W_P0 = [0,0,0,0,0,0], 绕Z轴旋转-d1_deg
-        pose_W_P_mm = [0, 0, 0, 0, 0, math.radians(-d1_deg)]
+        # pos2matrix 期望姿态角为弧度
+        d1_rad = math.radians(-d1_deg)
+        pose_W_P_mm = [0, 0, 0, 0, 0, d1_rad]
 
         # pos2matrix
         ret_wp = algo.rm_algo_pos2matrix(pose_W_P_mm)

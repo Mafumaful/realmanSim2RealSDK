@@ -266,9 +266,11 @@ class ArmBridge:
         # 5. 矩阵转位姿 (输出mm)
         pose_Bi_T = algo.matrix2pos(T_Bi_T, 1)
         if pose_Bi_T is None:
+            self.logger.warn(f'{self._tag} matrix2pos失败')
             return None
 
-        self.logger.info(f'{self._tag} IK输入(臂基座系,mm): [{pose_Bi_T[0]:.1f},{pose_Bi_T[1]:.1f},{pose_Bi_T[2]:.1f}]')
+        self.logger.info(f'{self._tag} 世界输入: [{x:.3f},{y:.3f},{z:.3f}]m')
+        self.logger.info(f'{self._tag} IK输入(臂基座系): [{pose_Bi_T[0]:.1f},{pose_Bi_T[1]:.1f},{pose_Bi_T[2]:.1f}]mm')
 
         # 6. IK解算 (输入mm)
         with self._lock:
