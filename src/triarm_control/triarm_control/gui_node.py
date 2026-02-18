@@ -580,43 +580,33 @@ class JointControlGUI(Node):
         pose_P_Bi_mm = [pose_P_Bi[0]*1000, pose_P_Bi[1]*1000, pose_P_Bi[2]*1000,
                        pose_P_Bi[3], pose_P_Bi[4], pose_P_Bi[5]]
 
-        # D1=0时，T_W_P = I (假设世界系与平台零位重合)
-        # T_W_Bi = T_P_Bi
+        # pos2matrix 返回 rm_matrix_t 对象，需要提取 .data
         ret1 = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
-        self.get_logger().info(f'pos2matrix(pose_P_Bi): {ret1}')
-
         ret2 = algo.rm_algo_pos2matrix(pose_Bi_T)
-        self.get_logger().info(f'pos2matrix(pose_Bi_T): {ret2}')
 
-        # 检查返回格式 - 可能直接返回矩阵
-        if isinstance(ret1, list) and len(ret1) == 16:
-            T_W_Bi = ret1
-        elif isinstance(ret1, (list, tuple)) and ret1[0] == 0:
-            T_W_Bi = ret1[1]
-        else:
-            self.get_logger().error(f'T_W_Bi 转换失败: {ret1}')
-            return None
-
-        if isinstance(ret2, list) and len(ret2) == 16:
-            T_Bi_T = ret2
-        elif isinstance(ret2, (list, tuple)) and ret2[0] == 0:
-            T_Bi_T = ret2[1]
-        else:
-            self.get_logger().error(f'T_Bi_T 转换失败: {ret2}')
+        try:
+            T_W_Bi = list(ret1.data)
+            T_Bi_T = list(ret2.data)
+        except Exception as e:
+            self.get_logger().error(f'矩阵提取失败: {e}')
             return None
 
         # T_W_T = T_W_Bi × T_Bi_T
         T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
 
         ret3 = algo.rm_algo_matrix2pos(T_W_T, 1)
-        self.get_logger().info(f'matrix2pos: {ret3}')
 
-        if isinstance(ret3, list) and len(ret3) == 6:
+        # matrix2pos 可能返回 (err, pose) 或直接返回 pose
+        if isinstance(ret3, (list, tuple)) and len(ret3) == 6:
             pose_W_T_mm = ret3
-        elif isinstance(ret3, (list, tuple)) and ret3[0] == 0:
-            pose_W_T_mm = ret3[1]
+        elif isinstance(ret3, (list, tuple)) and len(ret3) >= 2:
+            if ret3[0] == 0:
+                pose_W_T_mm = ret3[1]
+            else:
+                self.get_logger().error(f'matrix2pos 失败: {ret3}')
+                return None
         else:
-            self.get_logger().error(f'matrix2pos 失败: {ret3}')
+            self.get_logger().error(f'matrix2pos 返回格式未知: {ret3}')
             return None
 
         # mm → m
