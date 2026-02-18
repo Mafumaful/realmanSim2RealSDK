@@ -556,6 +556,7 @@ class JointControlGUI(Node):
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
+        self.get_logger().info(f'FK原始返回类型: {type(ret)}, 值: {ret}')
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
             pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
@@ -564,14 +565,22 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        # FK返回单位是米，转mm用于验证IK
-        pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
-                       pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+        # 检查FK返回的位置范围判断单位
+        # RM65工作半径约0.65m，如果xyz都<1可能是米，>100可能是mm
+        max_pos = max(abs(pose_Bi_T[i]) for i in range(3))
+        if max_pos < 2:  # 米
+            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
+                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+            self.get_logger().info(f'FK单位判断: 米 → 转mm')
+        else:  # 已经是mm
+            pose_Bi_T_mm = list(pose_Bi_T)
+            self.get_logger().info(f'FK单位判断: 已是mm')
 
-        # 验证IK能否求解回原关节角度
+        # 用原始关节角度作为参考验证IK
         from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
-        params = rm_inverse_kinematics_params_t([0.0]*6, pose_Bi_T_mm, 1)
+        params = rm_inverse_kinematics_params_t(joints_deg, pose_Bi_T_mm, 1)
         ik_ret = algo.rm_algo_inverse_kinematics(params)
+        self.get_logger().info(f'IK返回: {ik_ret}')
         ik_ok = isinstance(ik_ret, (list, tuple)) and ik_ret[0] == 0
 
         # 世界坐标变换
