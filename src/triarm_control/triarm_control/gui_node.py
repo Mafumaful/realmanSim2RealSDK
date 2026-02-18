@@ -558,10 +558,12 @@ class JointControlGUI(Node):
             return
 
         # 臂基座系 → 世界坐标系变换
+        self.get_logger().info(f'FK结果(臂基座系,mm): [{pose_Bi_T[0]:.1f},{pose_Bi_T[1]:.1f},{pose_Bi_T[2]:.1f}]')
         pose_W_T = self._base_to_world(algo, arm, pose_Bi_T)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
             return
+        self.get_logger().info(f'变换后(世界系,m): [{pose_W_T[0]:.4f},{pose_W_T[1]:.4f},{pose_W_T[2]:.4f}]')
 
         for i, e in enumerate(self.world_pose_entries):
             e.delete(0, tk.END)
