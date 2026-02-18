@@ -249,6 +249,9 @@ class JointControlGUI(Node):
         ttk.Button(btn_frame, text='加载当前参数', command=self._load_calib_params).pack(side='left', padx=5)
         ttk.Button(btn_frame, text='应用参数', command=self._apply_calib_params).pack(side='left', padx=5)
 
+        # 启动时从配置文件加载
+        self._load_calib_from_config()
+
     def _create_world_pose_tab(self, notebook):
         """创建世界坐标位姿输入标签页"""
         frame = ttk.Frame(notebook)
@@ -435,6 +438,25 @@ class JointControlGUI(Node):
                         e.delete(0, tk.END)
                         e.insert(0, f'{vals[j]:.4f}' if j < len(vals) else '0.0')
             self.get_logger().info('标定参数已加载')
+
+    def _load_calib_from_config(self):
+        """从配置文件加载标定参数"""
+        import os
+        import yaml
+        config_path = os.path.join(
+            os.path.dirname(__file__), '..', 'config', 'triarm_config.yaml')
+        try:
+            with open(config_path, 'r') as f:
+                cfg = yaml.safe_load(f)
+            params = cfg.get('unified_arm_node', {}).get('ros__parameters', {})
+            for arm in ['arm_a', 'arm_b', 'arm_s']:
+                vals = params.get(f'pose_P_{arm}', [0.0]*6)
+                for j, e in enumerate(self.calib_entries[arm]):
+                    e.delete(0, tk.END)
+                    e.insert(0, f'{vals[j]:.4f}' if j < len(vals) else '0.0')
+            self.get_logger().info(f'从配置文件加载标定参数: {config_path}')
+        except Exception as e:
+            self.get_logger().warn(f'加载配置文件失败: {e}')
 
     def _apply_calib_params(self):
         """应用标定参数到unified_arm_node"""
