@@ -71,7 +71,7 @@ class JointControlGUI(Node):
         # 发布夹爪控制指令
         self.gripper_pub = self.create_publisher(String, f'{prefix}gripper_control', 10)
 
-        # 发布 MoveL/MoveJP 命令
+        # 发布 MoveL/MoveJP/MoveP 命令
         self.movel_pubs = {
             'arm_a': self.create_publisher(Movel, 'arm_a/rm_driver/movel_cmd', 10),
             'arm_b': self.create_publisher(Movel, 'arm_b/rm_driver/movel_cmd', 10),
@@ -80,11 +80,16 @@ class JointControlGUI(Node):
             'arm_a': self.create_publisher(Movejp, 'arm_a/rm_driver/movej_p_cmd', 10),
             'arm_b': self.create_publisher(Movejp, 'arm_b/rm_driver/movej_p_cmd', 10),
         }
+        self.movep_pubs = {
+            'arm_a': self.create_publisher(Movel, 'arm_a/rm_driver/movep_cmd', 10),
+            'arm_b': self.create_publisher(Movel, 'arm_b/rm_driver/movep_cmd', 10),
+        }
 
         # 订阅运动结果
         for arm in ['arm_a', 'arm_b']:
             self.create_subscription(Bool, f'{arm}/rm_driver/movel_result', self._on_move_result, 10)
             self.create_subscription(Bool, f'{arm}/rm_driver/movej_p_result', self._on_move_result, 10)
+            self.create_subscription(Bool, f'{arm}/rm_driver/movep_result', self._on_move_result, 10)
 
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
@@ -291,6 +296,7 @@ class JointControlGUI(Node):
         btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
         ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='MoveP', command=lambda: self._send_world_pose('movep')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='直接执行(基座系)', command=self._send_base_pose).pack(side='left', padx=10)
 
@@ -511,9 +517,12 @@ class JointControlGUI(Node):
         if mode == 'movel':
             msg = Movel(pose=pose, speed=speed)
             self.movel_pubs[arm].publish(msg)
-        else:
+        elif mode == 'movejp':
             msg = Movejp(pose=pose, speed=speed)
             self.movejp_pubs[arm].publish(msg)
+        else:  # movep
+            msg = Movel(pose=pose, speed=speed)
+            self.movep_pubs[arm].publish(msg)
         self.world_pose_status.config(text='执行中...', foreground='orange')
         self._last_target_pose = vals  # 记录目标位姿
         self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
@@ -529,7 +538,7 @@ class JointControlGUI(Node):
                 foreground='red')
 
     def _gen_random_reachable(self):
-        """随机生成可达点 (通过FK) → 直接设置关节角度"""
+        """随机生成可达点 (通过FK) → 转换到世界坐标系"""
         import random
         from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
         try:
@@ -538,7 +547,6 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'Algo初始化失败: {e}', foreground='red')
             return
 
-        # 根据选择的臂获取关节限位
         arm = self.target_arm_var.get()
         arm_prefix = 'A' if arm == 'arm_a' else 'B'
         arm_joints = [f'joint_platform_{arm_prefix}{i}' for i in range(1, 7)]
@@ -547,32 +555,33 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
-        # 直接将关节角度设置到对应臂的滑块
-        start_idx = 1 if arm == 'arm_a' else 7
-        for i, deg in enumerate(joints_deg):
-            idx = start_idx + i
-            for s_idx, var, _, _ in self.sliders:
-                if s_idx == idx:
-                    var.set(deg)
-            for e_idx, entry, _, _ in self.entries:
-                if e_idx == idx:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, f'{deg:.1f}')
-
-        # FK 计算位姿用于显示
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
             pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
             pose_Bi_T = ret[1]
         else:
-            self.world_pose_status.config(text='已设置关节角度', foreground='green')
+            self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        # 显示位姿信息
+        if all(abs(pose_Bi_T[i]) < 10 for i in range(3)):
+            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
+                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+        else:
+            pose_Bi_T_mm = pose_Bi_T
+
+        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
+        if pose_W_T is None:
+            self.world_pose_status.config(text='坐标变换失败', foreground='red')
+            return
+
+        for i, e in enumerate(self.world_pose_entries):
+            e.delete(0, tk.END)
+            e.insert(0, f'{pose_W_T[i]:.4f}')
+
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
-        self.get_logger().info(f'FK位姿(臂基座系): [{pose_Bi_T[0]:.3f},{pose_Bi_T[1]:.3f},{pose_Bi_T[2]:.3f}]')
-        self.world_pose_status.config(text='已设置关节角度，点击执行发送', foreground='green')
+        self.get_logger().info(f'世界坐标: [{pose_W_T[0]:.3f},{pose_W_T[1]:.3f},{pose_W_T[2]:.3f}]')
+        self.world_pose_status.config(text='已生成世界坐标', foreground='green')
 
     def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿

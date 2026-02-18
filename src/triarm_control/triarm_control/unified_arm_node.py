@@ -118,6 +118,8 @@ class ArmBridge:
             Bool, f'{prefix}rm_driver/movej_result', 10)
         self._movejp_result_pub = node.create_publisher(
             Bool, f'{prefix}rm_driver/movej_p_result', 10)
+        self._movep_result_pub = node.create_publisher(
+            Bool, f'{prefix}rm_driver/movep_result', 10)
 
         # 状态反馈
         self._arm_pos_pub = node.create_publisher(
@@ -135,6 +137,9 @@ class ArmBridge:
         self._movejp_sub = node.create_subscription(
             Movejp, f'{prefix}rm_driver/movej_p_cmd',
             self._on_movejp, 10)
+        self._movep_sub = node.create_subscription(
+            Movel, f'{prefix}rm_driver/movep_cmd',
+            self._on_movep, 10)
         self._stop_sub = node.create_subscription(
             Empty, f'{prefix}rm_driver/move_stop_cmd',
             self._on_stop, 10)
@@ -184,6 +189,10 @@ class ArmBridge:
     def _on_movejp(self, msg: Movejp):
         threading.Thread(
             target=self._exec_movejp, args=(msg,), daemon=True).start()
+
+    def _on_movep(self, msg: Movel):
+        threading.Thread(
+            target=self._exec_movep, args=(msg,), daemon=True).start()
 
     def _on_stop(self, msg: Empty):
         self.logger.warn(f'{self._tag} 收到停止命令')
@@ -312,6 +321,19 @@ class ArmBridge:
         result.data = success
         self._movejp_result_pub.publish(result)
 
+    def _exec_movep(self, msg: Movel):
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
+            speed = msg.speed
+            if self.mode == 'real':
+                success = self._real_movep(x, y, z, rx, ry, rz, speed)
+            else:
+                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
+        result = Bool()
+        result.data = success
+        self._movep_result_pub.publish(result)
+
     # ─── Real 模式 ───
 
     def _real_movel(self, x, y, z, rx, ry, rz, speed) -> bool:
@@ -324,6 +346,10 @@ class ArmBridge:
 
     def _real_movejp(self, x, y, z, rx, ry, rz, speed) -> bool:
         ret = self._sdk.movej_p(x, y, z, rx, ry, rz, speed)
+        return ret == SDKMotionResult.SUCCESS
+
+    def _real_movep(self, x, y, z, rx, ry, rz, speed) -> bool:
+        ret = self._sdk.movep(x, y, z, rx, ry, rz, speed)
         return ret == SDKMotionResult.SUCCESS
 
     # ─── Sim 模式 ───

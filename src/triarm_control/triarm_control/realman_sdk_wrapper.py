@@ -108,7 +108,7 @@ class RealManAlgo:
         Args:
             q_ref_deg: 参考关节角度 [j1..j6] (角度制)
             target_pose: 目标位姿 [x,y,z,rx,ry,rz]
-                         位置(米), flag=1时姿态为欧拉角(弧度)
+                         位置(mm), flag=1时姿态为欧拉角(弧度)
             flag: 1=欧拉角, 0=四元数
 
         Returns:
@@ -122,16 +122,13 @@ class RealManAlgo:
                 from Robotic_Arm.rm_robot_interface import (
                     rm_inverse_kinematics_params_t,
                 )
-                params = rm_inverse_kinematics_params_t(
-                    q_ref_deg, target_pose, flag)
-                result = self._algo.rm_algo_inverse_kinematics(params)
-
-                if isinstance(result, (list, tuple)):
-                    if result[0] == 0:
+                # 尝试多个参考角度
+                refs_to_try = [q_ref_deg, [0.0]*6]
+                for ref in refs_to_try:
+                    params = rm_inverse_kinematics_params_t(ref, target_pose, flag)
+                    result = self._algo.rm_algo_inverse_kinematics(params)
+                    if isinstance(result, (list, tuple)) and result[0] == 0:
                         return list(result[1])
-                    else:
-                        print(f'[Algo] IK失败: code={result[0]}')
-                        return None
                 return None
             except Exception as e:
                 print(f'[Algo] IK异常: {e}')
@@ -533,6 +530,24 @@ class RealManSDKWrapper:
                 return SDKMotionResult.FAILED
             except Exception as e:
                 print(f'{self._tag} MoveJP异常: {e}')
+                return SDKMotionResult.FAILED
+
+    def movep(self, x: float, y: float, z: float,
+              rx: float, ry: float, rz: float,
+              speed: int = 20, block: bool = True) -> SDKMotionResult:
+        """点到点运动 (MoveP)"""
+        if not self._tcp_connected:
+            return SDKMotionResult.NOT_CONNECTED
+        with self._lock:
+            try:
+                pose = [x, y, z, rx, ry, rz]
+                ret = self._robot.rm_movep_canfd(pose, 0, 0, 0)
+                if ret == 0:
+                    return SDKMotionResult.SUCCESS
+                print(f'{self._tag} MoveP失败: ret={ret}')
+                return SDKMotionResult.FAILED
+            except Exception as e:
+                print(f'{self._tag} MoveP异常: {e}')
                 return SDKMotionResult.FAILED
 
     def stop(self) -> bool:
