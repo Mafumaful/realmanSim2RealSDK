@@ -172,6 +172,7 @@ class RealManAlgo:
         with self._lock:
             try:
                 result = self._algo.rm_algo_pose_move(pose, delta, mode)
+                print(f'[Algo] pose_move: pose={pose}, delta={delta}, result={result}')
                 if isinstance(result, (list, tuple)) and result[0] == 0:
                     return list(result[1])
                 return None
