@@ -529,7 +529,7 @@ class JointControlGUI(Node):
                 foreground='red')
 
     def _gen_random_reachable(self):
-        """随机生成可达点 (通过FK) → 转换到世界坐标系"""
+        """随机生成可达点 (通过FK) → 直接设置关节角度"""
         import random
         from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
         try:
@@ -547,38 +547,32 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
-        # FK: 关节角度 → 臂基座系位姿
+        # 直接将关节角度设置到对应臂的滑块
+        start_idx = 1 if arm == 'arm_a' else 7
+        for i, deg in enumerate(joints_deg):
+            idx = start_idx + i
+            for s_idx, var, _, _ in self.sliders:
+                if s_idx == idx:
+                    var.set(deg)
+            for e_idx, entry, _, _ in self.entries:
+                if e_idx == idx:
+                    entry.delete(0, tk.END)
+                    entry.insert(0, f'{deg:.1f}')
+
+        # FK 计算位姿用于显示
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        self.get_logger().info(f'FK原始返回: {ret}')
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
             pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
             pose_Bi_T = ret[1]
         else:
-            self.world_pose_status.config(text=f'FK失败: {ret}', foreground='red')
+            self.world_pose_status.config(text='已设置关节角度', foreground='green')
             return
 
-        # FK 返回单位是 mm，检查数值范围判断
-        # 如果 xyz 都很小 (<10)，可能返回的是米
-        if all(abs(pose_Bi_T[i]) < 10 for i in range(3)):
-            # 返回的是米，转换为毫米
-            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
-                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
-        else:
-            pose_Bi_T_mm = pose_Bi_T
-
-        # 臂基座系 → 世界坐标系变换
-        self.get_logger().info(f'FK结果(臂基座系,mm): [{pose_Bi_T_mm[0]:.1f},{pose_Bi_T_mm[1]:.1f},{pose_Bi_T_mm[2]:.1f}]')
-        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
-        if pose_W_T is None:
-            self.world_pose_status.config(text='坐标变换失败', foreground='red')
-            return
-        self.get_logger().info(f'变换后(世界系,m): [{pose_W_T[0]:.4f},{pose_W_T[1]:.4f},{pose_W_T[2]:.4f}]')
-
-        for i, e in enumerate(self.world_pose_entries):
-            e.delete(0, tk.END)
-            e.insert(0, f'{pose_W_T[i]:.4f}')
-        self.world_pose_status.config(text='已生成 (世界坐标系)', foreground='green')
+        # 显示位姿信息
+        self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
+        self.get_logger().info(f'FK位姿(臂基座系): [{pose_Bi_T[0]:.3f},{pose_Bi_T[1]:.3f},{pose_Bi_T[2]:.3f}]')
+        self.world_pose_status.config(text='已设置关节角度，点击执行发送', foreground='green')
 
     def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿
