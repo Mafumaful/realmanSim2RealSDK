@@ -21,6 +21,7 @@ except ImportError:
 from rm_ros_interfaces.msg import Movel, Movejp
 from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
+from .realman_sdk_wrapper import RealManAlgo, matrix_multiply
 
 
 class JointControlGUI(Node):
@@ -291,6 +292,7 @@ class JointControlGUI(Node):
         ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='直接执行(基座系)', command=self._send_base_pose).pack(side='left', padx=10)
 
         # 状态标签
         self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
@@ -527,7 +529,7 @@ class JointControlGUI(Node):
                 foreground='red')
 
     def _gen_random_reachable(self):
-        """随机生成可达点 (通过FK)"""
+        """随机生成可达点 (通过FK) → 转换到世界坐标系"""
         import random
         from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
         try:
@@ -535,27 +537,93 @@ class JointControlGUI(Node):
         except Exception as e:
             self.world_pose_status.config(text=f'Algo初始化失败: {e}', foreground='red')
             return
-        # 从 joint_names 获取关节限位 (A臂为例)
-        arm_joints = ['joint_platform_A1', 'joint_platform_A2', 'joint_platform_A3',
-                      'joint_platform_A4', 'joint_platform_A5', 'joint_platform_A6']
+
+        # 根据选择的臂获取关节限位
+        arm = self.target_arm_var.get()
+        arm_prefix = 'A' if arm == 'arm_a' else 'B'
+        arm_joints = [f'joint_platform_{arm_prefix}{i}' for i in range(1, 7)]
         joints_deg = []
         for name in arm_joints:
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
+
+        # FK: 关节角度 → 臂基座系位姿 (mm, rad)
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        # 返回格式: 直接是 [x,y,z,rx,ry,rz] 列表
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
-            pose = ret
+            pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
-            pose = ret[1]
+            pose_Bi_T = ret[1]
         else:
             self.world_pose_status.config(text=f'FK失败: {ret}', foreground='red')
             return
-        vals = [pose[0]/1000, pose[1]/1000, pose[2]/1000, pose[3], pose[4], pose[5]]
+
+        # 臂基座系 → 世界坐标系变换
+        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T)
+        if pose_W_T is None:
+            self.world_pose_status.config(text='坐标变换失败', foreground='red')
+            return
+
         for i, e in enumerate(self.world_pose_entries):
             e.delete(0, tk.END)
-            e.insert(0, f'{vals[i]:.4f}')
-        self.world_pose_status.config(text='已生成随机可达点', foreground='blue')
+            e.insert(0, f'{pose_W_T[i]:.4f}')
+        self.world_pose_status.config(text='已生成 (世界坐标系)', foreground='green')
+
+    def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
+        """臂基座系位姿 → 世界坐标系位姿
+        Args:
+            pose_Bi_T: [x,y,z,rx,ry,rz] mm+rad (臂基座系)
+        Returns:
+            [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
+        """
+        # 从标定参数获取变换
+        pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
+        pose_P_Bi_mm = [pose_P_Bi[0]*1000, pose_P_Bi[1]*1000, pose_P_Bi[2]*1000,
+                       pose_P_Bi[3], pose_P_Bi[4], pose_P_Bi[5]]
+
+        # D1=0时，T_W_P = I (假设世界系与平台零位重合)
+        # T_W_Bi = T_P_Bi
+        ret = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
+        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
+            return None
+        T_W_Bi = ret[1]
+
+        ret = algo.rm_algo_pos2matrix(pose_Bi_T)
+        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
+            return None
+        T_Bi_T = ret[1]
+
+        # T_W_T = T_W_Bi × T_Bi_T
+        T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
+
+        ret = algo.rm_algo_matrix2pos(T_W_T, 1)
+        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
+            return None
+        pose_W_T_mm = ret[1]
+
+        # mm → m
+        return [pose_W_T_mm[0]/1000, pose_W_T_mm[1]/1000, pose_W_T_mm[2]/1000,
+                pose_W_T_mm[3], pose_W_T_mm[4], pose_W_T_mm[5]]
+
+    def _send_base_pose(self):
+        """直接发送臂基座坐标系位姿 (跳过世界坐标变换)"""
+        try:
+            vals = [float(e.get()) for e in self.world_pose_entries]
+            speed = int(self.move_speed_entry.get())
+        except ValueError:
+            self.world_pose_status.config(text='输入无效', foreground='red')
+            return
+        arm = self.target_arm_var.get()
+        # 直接用SDK的movej_p，不经过坐标变换
+        from std_msgs.msg import Float64MultiArray
+        # 发布到专用话题，让unified_arm_node直接执行IK
+        if not hasattr(self, 'base_pose_pub'):
+            self.base_pose_pub = self.create_publisher(
+                Float64MultiArray, f'{arm}/base_pose_cmd', 10)
+        msg = Float64MultiArray()
+        msg.data = vals + [float(speed)]
+        self.base_pose_pub.publish(msg)
+        self.world_pose_status.config(text='已发送(基座系)', foreground='orange')
+        self._last_target_pose = vals
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""

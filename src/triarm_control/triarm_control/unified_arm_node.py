@@ -139,6 +139,11 @@ class ArmBridge:
             Empty, f'{prefix}rm_driver/move_stop_cmd',
             self._on_stop, 10)
 
+        # 基座坐标系位姿命令 (跳过世界坐标变换)
+        self._base_pose_sub = node.create_subscription(
+            Float64MultiArray, f'{prefix}base_pose_cmd',
+            self._on_base_pose, 10)
+
         # sim模式: 共享目标发布回调 (由外部设置)
         self._publish_shared_target = None
 
@@ -182,9 +187,23 @@ class ArmBridge:
 
     def _on_stop(self, msg: Empty):
         self.logger.warn(f'{self._tag} 收到停止命令')
-        self._stop_event.set()  # 取消 sim 模式等待
+        self._stop_event.set()
         if self.mode == 'real':
             self._sdk.stop()
+
+    def _on_base_pose(self, msg: Float64MultiArray):
+        """基座坐标系位姿命令 (跳过世界坐标变换)"""
+        threading.Thread(target=self._exec_base_pose, args=(msg.data,), daemon=True).start()
+
+    def _exec_base_pose(self, data):
+        """执行基座坐标系位姿"""
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = data[:6]
+            success = self._sim_move_to_pose_base(x, y, z, rx, ry, rz)
+        result = Bool()
+        result.data = success
+        self._movejp_result_pub.publish(result)
 
     # ─── 坐标变换 ───
 
@@ -312,6 +331,18 @@ class ArmBridge:
                 f'(target=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
+        return self._sim_move_joints(joints)
+
+    def _sim_move_to_pose_base(self, x, y, z, rx, ry, rz) -> bool:
+        """sim模式: 臂基座坐标系Pose → 直接IK → 关节角度"""
+        if not self._sdk.is_ready:
+            return False
+        with self._lock:
+            q_ref = list(self._current_joints)
+        joints = self._sdk.inverse_kinematics(x, y, z, rx, ry, rz, q_ref=q_ref)
+        if joints is None:
+            self.logger.warn(f'{self._tag} IK失败(基座系) [{x:.3f},{y:.3f},{z:.3f}]')
+            return False
         return self._sim_move_joints(joints)
 
     def _sim_move_joints(self, joints) -> bool:
