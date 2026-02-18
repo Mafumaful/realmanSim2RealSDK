@@ -123,12 +123,13 @@ class RealManAlgo:
                     rm_inverse_kinematics_params_t,
                 )
                 # 尝试多个参考角度
-                refs_to_try = [q_ref_deg, [0.0]*6]
+                refs_to_try = [q_ref_deg, [0.0]*6, [0, -20, -70, 0, -90, 0]]
                 for ref in refs_to_try:
                     params = rm_inverse_kinematics_params_t(ref, target_pose, flag)
                     result = self._algo.rm_algo_inverse_kinematics(params)
                     if isinstance(result, (list, tuple)) and result[0] == 0:
                         return list(result[1])
+                print(f'[Algo] IK失败: pose={target_pose[:3]}')
                 return None
             except Exception as e:
                 print(f'[Algo] IK异常: {e}')

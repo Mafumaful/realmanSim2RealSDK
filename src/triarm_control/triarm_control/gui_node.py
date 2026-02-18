@@ -564,12 +564,17 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        if all(abs(pose_Bi_T[i]) < 10 for i in range(3)):
-            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
-                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
-        else:
-            pose_Bi_T_mm = pose_Bi_T
+        # FK返回单位是米，转mm用于验证IK
+        pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
+                       pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
 
+        # 验证IK能否求解回原关节角度
+        from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
+        params = rm_inverse_kinematics_params_t([0.0]*6, pose_Bi_T_mm, 1)
+        ik_ret = algo.rm_algo_inverse_kinematics(params)
+        ik_ok = isinstance(ik_ret, (list, tuple)) and ik_ret[0] == 0
+
+        # 世界坐标变换
         pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
@@ -580,8 +585,10 @@ class JointControlGUI(Node):
             e.insert(0, f'{pose_W_T[i]:.4f}')
 
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
-        self.get_logger().info(f'世界坐标: [{pose_W_T[0]:.3f},{pose_W_T[1]:.3f},{pose_W_T[2]:.3f}]')
-        self.world_pose_status.config(text='已生成世界坐标', foreground='green')
+        self.get_logger().info(f'FK位姿(mm): [{pose_Bi_T_mm[0]:.1f},{pose_Bi_T_mm[1]:.1f},{pose_Bi_T_mm[2]:.1f}]')
+        self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
+        status = '已生成' if ik_ok else '已生成(IK可能失败)'
+        self.world_pose_status.config(text=status, foreground='green' if ik_ok else 'orange')
 
     def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿
