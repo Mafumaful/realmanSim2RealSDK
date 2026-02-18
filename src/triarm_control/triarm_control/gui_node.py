@@ -547,8 +547,9 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
-        # FK: 关节角度 → 臂基座系位姿 (mm, rad)
+        # FK: 关节角度 → 臂基座系位姿
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
+        self.get_logger().info(f'FK原始返回: {ret}')
         if isinstance(ret, (list, tuple)) and len(ret) == 6:
             pose_Bi_T = ret
         elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
@@ -557,9 +558,18 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败: {ret}', foreground='red')
             return
 
+        # FK 返回单位是 mm，检查数值范围判断
+        # 如果 xyz 都很小 (<10)，可能返回的是米
+        if all(abs(pose_Bi_T[i]) < 10 for i in range(3)):
+            # 返回的是米，转换为毫米
+            pose_Bi_T_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
+                           pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+        else:
+            pose_Bi_T_mm = pose_Bi_T
+
         # 臂基座系 → 世界坐标系变换
-        self.get_logger().info(f'FK结果(臂基座系,mm): [{pose_Bi_T[0]:.1f},{pose_Bi_T[1]:.1f},{pose_Bi_T[2]:.1f}]')
-        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T)
+        self.get_logger().info(f'FK结果(臂基座系,mm): [{pose_Bi_T_mm[0]:.1f},{pose_Bi_T_mm[1]:.1f},{pose_Bi_T_mm[2]:.1f}]')
+        pose_W_T = self._base_to_world(algo, arm, pose_Bi_T_mm)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
             return
