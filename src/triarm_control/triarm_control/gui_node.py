@@ -532,8 +532,8 @@ class JointControlGUI(Node):
         from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
         try:
             algo = Algo(rm_robot_arm_model_e.RM_MODEL_RM_65_E, rm_force_type_e.RM_MODEL_RM_B_E)
-        except:
-            self.world_pose_status.config(text='Algo初始化失败', foreground='red')
+        except Exception as e:
+            self.world_pose_status.config(text=f'Algo初始化失败: {e}', foreground='red')
             return
         # 从 joint_names 获取关节限位 (A臂为例)
         arm_joints = ['joint_platform_A1', 'joint_platform_A2', 'joint_platform_A3',
@@ -543,10 +543,14 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
         ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        if ret[0] != 0:
-            self.world_pose_status.config(text='FK失败', foreground='red')
+        # 处理不同返回格式
+        if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
+            pose = ret[1]
+        elif hasattr(ret, 'pose'):
+            pose = ret.pose
+        else:
+            self.world_pose_status.config(text=f'FK失败: {ret}', foreground='red')
             return
-        pose = ret[1]
         vals = [pose[0]/1000, pose[1]/1000, pose[2]/1000, pose[3], pose[4], pose[5]]
         for i, e in enumerate(self.world_pose_entries):
             e.delete(0, tk.END)
