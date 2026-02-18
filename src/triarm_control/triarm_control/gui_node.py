@@ -586,7 +586,7 @@ class JointControlGUI(Node):
             e.insert(0, f'{pose_W_T[i]:.4f}')
 
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
-        self.get_logger().info(f'FK位姿(mm): [{pose_Bi_T_mm[0]:.1f},{pose_Bi_T_mm[1]:.1f},{pose_Bi_T_mm[2]:.1f}]')
+        self.get_logger().info(f'FK位姿(mm): [{pose_mm[0]:.1f},{pose_mm[1]:.1f},{pose_mm[2]:.1f}]')
         self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
         status = '已生成' if ik_ok else '已生成(IK可能失败)'
         self.world_pose_status.config(text=status, foreground='green' if ik_ok else 'orange')
