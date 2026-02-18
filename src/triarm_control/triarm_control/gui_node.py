@@ -575,12 +575,15 @@ class JointControlGUI(Node):
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
+        from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
+        import ctypes
+
         # 从标定参数获取变换
         pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
         pose_P_Bi_mm = [pose_P_Bi[0]*1000, pose_P_Bi[1]*1000, pose_P_Bi[2]*1000,
                        pose_P_Bi[3], pose_P_Bi[4], pose_P_Bi[5]]
 
-        # pos2matrix 返回 rm_matrix_t 对象，需要提取 .data
+        # pos2matrix 返回 rm_matrix_t 对象
         ret1 = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
         ret2 = algo.rm_algo_pos2matrix(pose_Bi_T)
 
@@ -594,19 +597,19 @@ class JointControlGUI(Node):
         # T_W_T = T_W_Bi × T_Bi_T
         T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
 
-        ret3 = algo.rm_algo_matrix2pos(T_W_T, 1)
+        # 创建 rm_matrix_t 对象
+        matrix_obj = rm_matrix_t()
+        matrix_obj.data = (ctypes.c_float * 16)(*T_W_T)
 
-        # matrix2pos 可能返回 (err, pose) 或直接返回 pose
+        ret3 = algo.rm_algo_matrix2pos(matrix_obj, 1)
+
+        # matrix2pos 返回 [x,y,z,rx,ry,rz]
         if isinstance(ret3, (list, tuple)) and len(ret3) == 6:
             pose_W_T_mm = ret3
-        elif isinstance(ret3, (list, tuple)) and len(ret3) >= 2:
-            if ret3[0] == 0:
-                pose_W_T_mm = ret3[1]
-            else:
-                self.get_logger().error(f'matrix2pos 失败: {ret3}')
-                return None
+        elif isinstance(ret3, (list, tuple)) and len(ret3) >= 2 and ret3[0] == 0:
+            pose_W_T_mm = ret3[1]
         else:
-            self.get_logger().error(f'matrix2pos 返回格式未知: {ret3}')
+            self.get_logger().error(f'matrix2pos 失败: {ret3}')
             return None
 
         # mm → m
