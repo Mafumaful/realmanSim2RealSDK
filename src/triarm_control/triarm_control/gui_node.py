@@ -582,23 +582,42 @@ class JointControlGUI(Node):
 
         # D1=0时，T_W_P = I (假设世界系与平台零位重合)
         # T_W_Bi = T_P_Bi
-        ret = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
-        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
-            return None
-        T_W_Bi = ret[1]
+        ret1 = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
+        self.get_logger().info(f'pos2matrix(pose_P_Bi): {ret1}')
 
-        ret = algo.rm_algo_pos2matrix(pose_Bi_T)
-        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
+        ret2 = algo.rm_algo_pos2matrix(pose_Bi_T)
+        self.get_logger().info(f'pos2matrix(pose_Bi_T): {ret2}')
+
+        # 检查返回格式 - 可能直接返回矩阵
+        if isinstance(ret1, list) and len(ret1) == 16:
+            T_W_Bi = ret1
+        elif isinstance(ret1, (list, tuple)) and ret1[0] == 0:
+            T_W_Bi = ret1[1]
+        else:
+            self.get_logger().error(f'T_W_Bi 转换失败: {ret1}')
             return None
-        T_Bi_T = ret[1]
+
+        if isinstance(ret2, list) and len(ret2) == 16:
+            T_Bi_T = ret2
+        elif isinstance(ret2, (list, tuple)) and ret2[0] == 0:
+            T_Bi_T = ret2[1]
+        else:
+            self.get_logger().error(f'T_Bi_T 转换失败: {ret2}')
+            return None
 
         # T_W_T = T_W_Bi × T_Bi_T
         T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
 
-        ret = algo.rm_algo_matrix2pos(T_W_T, 1)
-        if not (isinstance(ret, (list, tuple)) and ret[0] == 0):
+        ret3 = algo.rm_algo_matrix2pos(T_W_T, 1)
+        self.get_logger().info(f'matrix2pos: {ret3}')
+
+        if isinstance(ret3, list) and len(ret3) == 6:
+            pose_W_T_mm = ret3
+        elif isinstance(ret3, (list, tuple)) and ret3[0] == 0:
+            pose_W_T_mm = ret3[1]
+        else:
+            self.get_logger().error(f'matrix2pos 失败: {ret3}')
             return None
-        pose_W_T_mm = ret[1]
 
         # mm → m
         return [pose_W_T_mm[0]/1000, pose_W_T_mm[1]/1000, pose_W_T_mm[2]/1000,
