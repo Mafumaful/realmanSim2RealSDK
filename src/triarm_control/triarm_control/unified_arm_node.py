@@ -225,14 +225,17 @@ class ArmBridge:
         d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
         self.logger.info(f'{self._tag} D1角度={d1_deg:.1f}°')
 
-        # 1. 平台当前位姿 (绕Z轴旋转, 顺时针为负)
-        # pose_move: 位置mm, delta角度deg
+        # 1. 平台当前位姿 (绕Z轴旋转)
+        # 当D1=0时直接用零位，避免pose_move调用
         pose_W_P0_mm = self._pose_m_to_mm(self._pose_W_P0)
-        delta = [0, 0, 0, 0, 0, -d1_deg]
-        pose_W_P_mm = algo.pose_move(pose_W_P0_mm, delta, 1)
-        if pose_W_P_mm is None:
-            self.logger.warn(f'{self._tag} pose_move失败')
-            return None
+        if abs(d1_deg) < 0.01:
+            pose_W_P_mm = pose_W_P0_mm
+        else:
+            delta = [0, 0, 0, 0, 0, -d1_deg]
+            pose_W_P_mm = algo.pose_move(pose_W_P0_mm, delta, 1)
+            if pose_W_P_mm is None:
+                self.logger.warn(f'{self._tag} pose_move失败')
+                return None
 
         # 2. 位姿转矩阵 (pos2matrix需要mm)
         T_W_P = algo.pos2matrix(pose_W_P_mm)
