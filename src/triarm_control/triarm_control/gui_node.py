@@ -573,6 +573,7 @@ class JointControlGUI(Node):
         from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
         params_mm = rm_inverse_kinematics_params_t(joints_deg, pose_mm, 1)
         ik_ret = algo.rm_algo_inverse_kinematics(params_mm)
+        self.get_logger().info(f'IK返回: {ik_ret}')
         ik_ok = isinstance(ik_ret, tuple) and ik_ret[0] == 0
 
         # 世界坐标变换 (输入mm)
