@@ -144,7 +144,10 @@ class RealManAlgo:
         with self._lock:
             try:
                 result = self._algo.rm_algo_pos2matrix(pose)
-                if isinstance(result, (list, tuple)) and result[0] == 0:
+                # SDK可能返回 rm_matrix_t 对象或 (code, data) 元组
+                if hasattr(result, 'data'):
+                    return list(result.data)
+                elif isinstance(result, (list, tuple)) and result[0] == 0:
                     return list(result[1])
                 return None
             except Exception as e:
@@ -157,8 +160,15 @@ class RealManAlgo:
             return None
         with self._lock:
             try:
-                result = self._algo.rm_algo_matrix2pos(matrix, flag)
-                if isinstance(result, (list, tuple)) and result[0] == 0:
+                from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
+                import ctypes
+                matrix_obj = rm_matrix_t()
+                matrix_obj.data = (ctypes.c_float * 16)(*matrix)
+                result = self._algo.rm_algo_matrix2pos(matrix_obj, flag)
+                # SDK可能返回列表或 (code, data) 元组
+                if isinstance(result, (list, tuple)) and len(result) == 6:
+                    return list(result)
+                elif isinstance(result, (list, tuple)) and result[0] == 0:
                     return list(result[1])
                 return None
             except Exception as e:
