@@ -565,19 +565,18 @@ class JointControlGUI(Node):
             self.world_pose_status.config(text=f'FK失败', foreground='red')
             return
 
-        # 转mm
-        pose_mm = [pose_Bi_T[0]*1000, pose_Bi_T[1]*1000, pose_Bi_T[2]*1000,
-                   pose_Bi_T[3], pose_Bi_T[4], pose_Bi_T[5]]
+        # FK返回 m+rad，直接使用
+        pose_fk = list(pose_Bi_T)
 
         # 验证IK
         from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
-        params_mm = rm_inverse_kinematics_params_t(joints_deg, pose_mm, 1)
-        ik_ret = algo.rm_algo_inverse_kinematics(params_mm)
+        ik_params = rm_inverse_kinematics_params_t(joints_deg, pose_fk, 1)
+        ik_ret = algo.rm_algo_inverse_kinematics(ik_params)
         self.get_logger().info(f'IK返回: {ik_ret}')
         ik_ok = isinstance(ik_ret, tuple) and ik_ret[0] == 0
 
-        # 世界坐标变换 (输入mm)
-        pose_W_T = self._base_to_world(algo, arm, pose_mm)
+        # 臂基座系 → 世界坐标系 (m+rad)
+        pose_W_T = self._base_to_world(algo, arm, pose_fk)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
             return
@@ -587,7 +586,7 @@ class JointControlGUI(Node):
             e.insert(0, f'{pose_W_T[i]:.4f}')
 
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
-        self.get_logger().info(f'FK位姿(mm): [{pose_mm[0]:.1f},{pose_mm[1]:.1f},{pose_mm[2]:.1f}]')
+        self.get_logger().info(f'FK位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
         self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
         status = '已生成' if ik_ok else '已生成(IK可能失败)'
         self.world_pose_status.config(text=status, foreground='green' if ik_ok else 'orange')
@@ -595,27 +594,23 @@ class JointControlGUI(Node):
     def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿
         Args:
-            pose_Bi_T: [x,y,z,rx,ry,rz] mm+rad (臂基座系)
+            pose_Bi_T: [x,y,z,rx,ry,rz] m+rad (臂基座系)
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
         from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
         import ctypes
 
-        # 从标定参数获取变换 (平台到臂基座)
+        # 从标定参数获取变换 (平台到臂基座, m+rad)
         pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
-        pose_P_Bi_mm = [pose_P_Bi[0]*1000, pose_P_Bi[1]*1000, pose_P_Bi[2]*1000,
-                       pose_P_Bi[3], pose_P_Bi[4], pose_P_Bi[5]]
 
-        # 获取当前D1角度，计算平台在世界系中的位姿
+        # 获取当前D1角度 (URDF中D1轴为负Z，需取反)
         d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
-        # pos2matrix 期望姿态角为弧度
         d1_rad = math.radians(-d1_deg)
-        pose_W_P_mm = [0, 0, 0, 0, 0, d1_rad]
 
-        # pos2matrix
-        ret_wp = algo.rm_algo_pos2matrix(pose_W_P_mm)
-        ret_pb = algo.rm_algo_pos2matrix(pose_P_Bi_mm)
+        # pos2matrix (SDK单位: m+rad)
+        ret_wp = algo.rm_algo_pos2matrix([0, 0, 0, 0, 0, d1_rad])
+        ret_pb = algo.rm_algo_pos2matrix(pose_P_Bi)
         ret_bt = algo.rm_algo_pos2matrix(pose_Bi_T)
 
         try:
@@ -636,18 +631,16 @@ class JointControlGUI(Node):
 
         ret3 = algo.rm_algo_matrix2pos(matrix_obj, 1)
 
-        # matrix2pos 返回 [x,y,z,rx,ry,rz]
+        # matrix2pos 返回 [x,y,z,rx,ry,rz] (m+rad)
         if isinstance(ret3, (list, tuple)) and len(ret3) == 6:
-            pose_W_T_mm = ret3
+            pose_W_T = ret3
         elif isinstance(ret3, (list, tuple)) and len(ret3) >= 2 and ret3[0] == 0:
-            pose_W_T_mm = ret3[1]
+            pose_W_T = ret3[1]
         else:
             self.get_logger().error(f'matrix2pos 失败: {ret3}')
             return None
 
-        # mm → m
-        return [pose_W_T_mm[0]/1000, pose_W_T_mm[1]/1000, pose_W_T_mm[2]/1000,
-                pose_W_T_mm[3], pose_W_T_mm[4], pose_W_T_mm[5]]
+        return list(pose_W_T)
 
     def _send_base_pose(self):
         """直接发送臂基座坐标系位姿 (跳过世界坐标变换)"""

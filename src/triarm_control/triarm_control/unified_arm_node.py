@@ -215,10 +215,7 @@ class ArmBridge:
         self._movejp_result_pub.publish(result)
 
     # ─── 坐标变换 ───
-
-    def _pose_m_to_mm(self, pose):
-        """位姿单位转换: m → mm (仅位置部分)"""
-        return [pose[0]*1000, pose[1]*1000, pose[2]*1000, pose[3], pose[4], pose[5]]
+    # SDK单位约定: 位置 m, 姿态 rad (来自 rm_pose_t 定义)
 
     def world_pose_to_joints(self, x, y, z, rx, ry, rz) -> Optional[List[float]]:
         """世界坐标系位姿 → 臂关节角度 (弧度)
@@ -230,42 +227,38 @@ class ArmBridge:
             self.logger.warn(f'{self._tag} Algo未就绪')
             return None
 
-        # 获取D1角度
+        # 获取D1角度 (URDF中D1轴为负Z，Isaac Sim返回的角度需取反)
         d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+        d1_rad = math.radians(-d1_deg)
         self.logger.info(f'{self._tag} D1角度={d1_deg:.1f}°')
 
-        # 1. 平台当前位姿 (绕Z轴旋转)
-        # 直接构造位姿，与gui_node._base_to_world保持一致
-        d1_rad = math.radians(-d1_deg)
-        pose_W_P_mm = [0, 0, 0, 0, 0, d1_rad]
-
-        # 2. 位姿转矩阵 (pos2matrix需要mm)
-        T_W_P = algo.pos2matrix(pose_W_P_mm)
-        T_P_Bi = algo.pos2matrix(self._pose_m_to_mm(self._pose_P_Bi))
+        # 1. 平台位姿 (D1绕Z轴旋转)
+        T_W_P = algo.pos2matrix([0, 0, 0, 0, 0, d1_rad])
+        # 2. 臂基座相对平台的安装位姿 (m + rad)
+        T_P_Bi = algo.pos2matrix(self._pose_P_Bi)
         if T_W_P is None or T_P_Bi is None:
-            self.logger.warn(f'{self._tag} pos2matrix失败: T_W_P={T_W_P is not None}, T_P_Bi={T_P_Bi is not None}')
+            self.logger.warn(f'{self._tag} pos2matrix失败')
             return None
 
         # 3. 臂基座在世界系下的变换
         T_W_Bi = matrix_multiply(T_W_P, T_P_Bi)
 
         # 4. 世界目标转臂坐标系
-        pose_W_T_mm = [x * 1000, y * 1000, z * 1000, rx, ry, rz]
-        T_W_T = algo.pos2matrix(pose_W_T_mm)
+        T_W_T = algo.pos2matrix([x, y, z, rx, ry, rz])
         if T_W_T is None:
             return None
         T_Bi_T = matrix_multiply(matrix_inverse(T_W_Bi), T_W_T)
 
-        # 5. 矩阵转位姿 (输出mm)
+        # 5. 矩阵转位姿
         pose_Bi_T = algo.matrix2pos(T_Bi_T, 1)
         if pose_Bi_T is None:
             self.logger.warn(f'{self._tag} matrix2pos失败')
             return None
 
         self.logger.info(f'{self._tag} 世界输入: [{x:.3f},{y:.3f},{z:.3f}]m')
-        self.logger.info(f'{self._tag} IK输入(臂基座系): [{pose_Bi_T[0]:.1f},{pose_Bi_T[1]:.1f},{pose_Bi_T[2]:.1f}]mm')
+        self.logger.info(f'{self._tag} IK输入(臂基座系): [{pose_Bi_T[0]:.4f},{pose_Bi_T[1]:.4f},{pose_Bi_T[2]:.4f}]m')
 
-        # 6. IK解算 (输入mm)
+        # 6. IK解算
         with self._lock:
             q_ref = list(self._current_joints)
         q_ref_deg = [math.degrees(q) for q in q_ref]

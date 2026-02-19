@@ -108,7 +108,7 @@ class RealManAlgo:
         Args:
             q_ref_deg: 参考关节角度 [j1..j6] (角度制)
             target_pose: 目标位姿 [x,y,z,rx,ry,rz]
-                         位置(mm), flag=1时姿态为欧拉角(弧度)
+                         位置(m), flag=1时姿态为欧拉角(弧度)
             flag: 1=欧拉角, 0=四元数
 
         Returns:
@@ -398,8 +398,8 @@ class RealManSDKWrapper:
         else:
             q_ref_deg = [0.0] * 6
 
-        # SDK Algo 期望位置单位为毫米，输入为米，需要转换
-        target_pose = [x * 1000, y * 1000, z * 1000, rx, ry, rz]
+        # SDK Algo 位置单位为米 (m)，姿态单位为弧度 (rad)
+        target_pose = [x, y, z, rx, ry, rz]
         result_deg = self._algo.inverse_kinematics(
             q_ref_deg, target_pose, flag=1)
 
