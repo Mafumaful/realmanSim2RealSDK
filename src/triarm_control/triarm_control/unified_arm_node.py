@@ -508,10 +508,9 @@ class UnifiedArmNode(Node):
         self._base_angle_pub = None
 
         # 共享23关节目标数组 (角度制, sim模式核心状态)
-        # 仅在首次收到sim状态时初始化，之后由命令驱动，避免与controller_node产生竞态
+        # 由 /joint_command 持续同步，确保与 controller_node 内部目标一致
         self._shared_target = [0.0] * TOTAL_JOINT_COUNT
         self._shared_target_lock = threading.Lock()
-        self._shared_target_initialized = False
         self._d1_lock = threading.Lock()
         self._current_d1_angle = 0.0
 
@@ -532,6 +531,12 @@ class UnifiedArmNode(Node):
             self._gripper_target_sub = self.create_subscription(
                 Float64MultiArray, f'{prefix}gripper_target',
                 self._on_gripper_target, 10)
+
+            # 订阅 /joint_command (controller_node 插值输出)
+            # 用于持续同步 _shared_target，确保与 controller_node 内部目标一致
+            self._cmd_sync_sub = self.create_subscription(
+                JointState, f'{prefix}joint_command',
+                self._on_cmd_sync, 10)
 
         # 创建 A/B 臂桥接器
         self._bridges = {}
@@ -576,15 +581,6 @@ class UnifiedArmNode(Node):
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
-        # 仅首次同步共享目标数组（初始化），之后由命令驱动
-        if not self._shared_target_initialized:
-            with self._shared_target_lock:
-                for i, pos in enumerate(positions):
-                    if i < len(self._shared_target):
-                        self._shared_target[i] = math.degrees(pos)
-                self._shared_target_initialized = True
-            self.get_logger().info('共享目标数组已从sim状态初始化')
-
         # 底盘角度桥接: D1 (index 0)
         if self._base_angle_pub and len(positions) > 0:
             d1_deg = math.degrees(positions[0])
@@ -595,6 +591,17 @@ class UnifiedArmNode(Node):
             self._base_angle_pub.publish(angle_msg)
 
     # ─── 共享目标管理 (sim模式) ───
+
+    def _on_cmd_sync(self, msg: JointState):
+        """从 controller_node 的 /joint_command 同步 _shared_target
+        确保 _shared_target 始终与 controller_node 内部目标一致，
+        避免 MoveP 发布时其他臂的值与 controller_node 不同步。
+        """
+        with self._shared_target_lock:
+            for i, name in enumerate(msg.name):
+                if i < len(msg.position) and name in JOINT_NAMES_LIST:
+                    idx = JOINT_NAMES_LIST.index(name)
+                    self._shared_target[idx] = math.degrees(msg.position[i])
 
     def _get_d1_angle(self) -> float:
         """获取当前D1角度 (度)"""
