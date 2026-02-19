@@ -574,6 +574,12 @@ class UnifiedArmNode(Node):
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
+        # 同步共享目标数组，避免发布时将未更新的关节归零
+        with self._shared_target_lock:
+            for i, pos in enumerate(positions):
+                if i < len(self._shared_target):
+                    self._shared_target[i] = math.degrees(pos)
+
         # 底盘角度桥接: D1 (index 0)
         if self._base_angle_pub and len(positions) > 0:
             d1_deg = math.degrees(positions[0])
@@ -599,8 +605,6 @@ class UnifiedArmNode(Node):
         if not self._target_joints_pub:
             return
         with self._shared_target_lock:
-            # 同步D1当前角度，避免发布时将D1归零
-            self._shared_target[0] = self._get_d1_angle()
             for idx, val in zip(indices, joints_rad):
                 self._shared_target[idx] = math.degrees(val)
             msg = Float64MultiArray()
