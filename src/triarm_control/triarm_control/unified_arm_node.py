@@ -493,11 +493,11 @@ class UnifiedArmNode(Node):
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.02)
         self.declare_parameter('sim_motion_timeout', 10.0)
-        # 坐标变换参数 (m + rad)
+        # 坐标变换参数 (m + rad), 来自URDF joint_platform_X1 origin
         self.declare_parameter('pose_W_P0', [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        self.declare_parameter('pose_P_arm_a', [0.0, 0.15, 0.0, 0.0, 0.0, 0.0])
-        self.declare_parameter('pose_P_arm_b', [0.0, -0.15, 0.0, 0.0, 0.0, 3.14159])
-        self.declare_parameter('pose_P_arm_s', [-0.15, 0.0, 0.2, 0.0, 0.0, 1.5708])
+        self.declare_parameter('pose_P_arm_a', [0.156, 0.142, -0.227, -1.5708, 0.0, -0.827])
+        self.declare_parameter('pose_P_arm_b', [-0.142, 0.156, -0.227, -1.5708, 0.0, 0.744])
+        self.declare_parameter('pose_P_arm_s', [0.0004, 0.0004, -0.400, 0.0, 0.0, 0.0])
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
