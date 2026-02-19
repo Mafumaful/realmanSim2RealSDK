@@ -171,10 +171,18 @@ class ArmController:
         return self.is_moving
 
     def _step_smooth(self) -> bool:
-        """S型曲线插值（平滑加减速）"""
+        """S型曲线插值（平滑加减速）
+
+        改进点:
+        - 用离散步数精确计算减速距离，避免连续公式误差
+        - 速度方向与目标方向相反时立即制动反转
+        - 最后阶段线性收敛，消除微振荡
+        """
         dt = 1.0 / self.publish_rate
         max_velocity = math.radians(self.joint_velocity)
-        max_acceleration = math.radians(self.acceleration)
+        max_accel = math.radians(self.acceleration)
+        max_dv = max_accel * dt          # 单步最大速度变化量
+        converge_threshold = 0.005       # 进入线性收敛的距离阈值 (rad)
 
         all_reached = True
 
@@ -183,43 +191,68 @@ class ArmController:
 
             if abs(diff) > 0.001:
                 all_reached = False
+                v = self.current_velocities[i]
 
-                # 计算期望速度方向
-                desired_velocity = max_velocity if diff > 0 else -max_velocity
+                # ── 最后阶段: 距离很近且速度很低 → 线性收敛 ──
+                if abs(diff) < converge_threshold and abs(v) < max_dv * 2:
+                    max_step = math.radians(self.joint_velocity) * dt
+                    delta = max(-max_step, min(max_step, diff))
+                    self.cmd_positions[i] += delta
+                    self.current_velocities[i] = delta / dt
+                    continue
 
-                # 计算减速所需距离
-                decel_distance = (self.current_velocities[i] ** 2) / (2 * max_acceleration)
-
-                # 判断是否需要减速
-                if abs(diff) <= abs(decel_distance):
-                    # 减速阶段
-                    if abs(self.current_velocities[i]) > 0.001:
-                        accel = -max_acceleration if self.current_velocities[i] > 0 else max_acceleration
+                # ── 速度方向与目标方向相反 → 立即制动 ──
+                if v * diff < 0:
+                    if abs(v) <= max_dv:
+                        v = 0.0
                     else:
-                        accel = 0
+                        v += max_dv if diff > 0 else -max_dv
+                    self.current_velocities[i] = v
+                    delta = v * dt
+                    self.cmd_positions[i] += delta
+                    continue
+
+                # ── 计算离散减速距离 (精确步数求和) ──
+                # 从当前速度 |v| 以 max_dv 逐步减速到 0 所需的距离
+                abs_v = abs(v)
+                steps_to_stop = math.ceil(abs_v / max_dv) if max_dv > 0 else 0
+                # 等差数列求和: v, v-dv, v-2dv, ..., 0
+                # 距离 = dt * (steps * v - dv * steps*(steps-1)/2)
+                # 简化: 距离 ≈ v² / (2*a) + |v|*dt/2 (离散修正项)
+                decel_dist = (abs_v * abs_v) / (2 * max_accel) + abs_v * dt * 0.5
+
+                if abs(diff) <= decel_dist:
+                    # ── 减速阶段: 精确计算所需减速度 ──
+                    # 目标: 在剩余距离 diff 内从 v 减速到 0
+                    # a_needed = v² / (2 * |diff|)
+                    a_needed = (v * v) / (2.0 * abs(diff)) if abs(diff) > 1e-6 else max_accel
+                    a_needed = min(a_needed, max_accel)
+                    dv = a_needed * dt
+                    if v > 0:
+                        v = max(0.0, v - dv)
+                    else:
+                        v = min(0.0, v + dv)
                 else:
-                    # 加速或匀速阶段
-                    velocity_diff = desired_velocity - self.current_velocities[i]
-                    if abs(velocity_diff) > max_acceleration * dt:
-                        accel = max_acceleration if velocity_diff > 0 else -max_acceleration
+                    # ── 加速/匀速阶段 ──
+                    desired_v = max_velocity if diff > 0 else -max_velocity
+                    v_diff = desired_v - v
+                    if abs(v_diff) > max_dv:
+                        v += max_dv if v_diff > 0 else -max_dv
                     else:
-                        accel = velocity_diff / dt
+                        v = desired_v
 
-                # 更新速度
-                self.current_velocities[i] += accel * dt
+                # 限速
+                v = max(-max_velocity, min(max_velocity, v))
+                self.current_velocities[i] = v
 
-                # 限制速度
-                self.current_velocities[i] = max(-max_velocity, min(max_velocity, self.current_velocities[i]))
-
-                # 更新位置
-                delta = self.current_velocities[i] * dt
+                # 更新位置 (防过冲)
+                delta = v * dt
                 if abs(delta) > abs(diff):
                     delta = diff
-                    self.current_velocities[i] = 0
-
+                    self.current_velocities[i] = 0.0
                 self.cmd_positions[i] += delta
             else:
-                self.current_velocities[i] = 0
+                self.current_velocities[i] = 0.0
 
         if self._on_command_ready:
             self._on_command_ready(list(self.cmd_positions))

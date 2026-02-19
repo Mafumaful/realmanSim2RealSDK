@@ -437,15 +437,18 @@ class UnifiedArmNode(Node):
 
     def _sim_state_cb(self, msg: JointState):
         """从 Isaac Sim /joint_states 更新所有关节状态 (含夹爪)"""
-        positions = list(msg.position)
+        # 按名称映射，兼容 Isaac Sim 任意关节顺序
+        name_to_pos = dict(zip(msg.name, msg.position))
+        positions = [name_to_pos.get(n, 0.0) for n in JOINT_NAMES_LIST]
 
         # 更新臂关节
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
-        # 底盘角度桥接: D1 (index 0)
-        if self._base_angle_pub and len(positions) > 0:
-            d1_deg = math.degrees(positions[0])
+        # 底盘角度桥接: D1
+        d1_name = JOINT_NAMES_LIST[0]
+        if self._base_angle_pub and d1_name in name_to_pos:
+            d1_deg = math.degrees(name_to_pos[d1_name])
             with self._d1_lock:
                 self._current_d1_angle = d1_deg
             angle_msg = Float64()
