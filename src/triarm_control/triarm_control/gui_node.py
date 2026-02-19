@@ -401,6 +401,7 @@ class JointControlGUI(Node):
                     idx = JOINT_NAMES_LIST.index(name)
                     self.cmd_positions[idx] = msg.position[i]
             self._update_cmd_labels()
+            self._sync_sliders_to_cmd()
 
     def _update_realtime_labels(self):
         for idx, label in self.realtime_labels:
@@ -409,6 +410,11 @@ class JointControlGUI(Node):
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:
             label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
+
+    def _sync_sliders_to_cmd(self):
+        """将滑块和输入框同步到当前指令值"""
+        for idx, var, _, _ in self.sliders:
+            var.set(round(math.degrees(self.cmd_positions[idx]), 1))
 
     def _send_target(self):
         if not self.has_state:
