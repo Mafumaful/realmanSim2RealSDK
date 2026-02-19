@@ -599,6 +599,8 @@ class UnifiedArmNode(Node):
         if not self._target_joints_pub:
             return
         with self._shared_target_lock:
+            # 同步D1当前角度，避免发布时将D1归零
+            self._shared_target[0] = self._get_d1_angle()
             for idx, val in zip(indices, joints_rad):
                 self._shared_target[idx] = math.degrees(val)
             msg = Float64MultiArray()
