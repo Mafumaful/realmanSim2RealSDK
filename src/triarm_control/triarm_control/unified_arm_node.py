@@ -508,8 +508,10 @@ class UnifiedArmNode(Node):
         self._base_angle_pub = None
 
         # 共享23关节目标数组 (角度制, sim模式核心状态)
+        # 仅在首次收到sim状态时初始化，之后由命令驱动，避免与controller_node产生竞态
         self._shared_target = [0.0] * TOTAL_JOINT_COUNT
         self._shared_target_lock = threading.Lock()
+        self._shared_target_initialized = False
         self._d1_lock = threading.Lock()
         self._current_d1_angle = 0.0
 
@@ -574,11 +576,14 @@ class UnifiedArmNode(Node):
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
-        # 同步共享目标数组，避免发布时将未更新的关节归零
-        with self._shared_target_lock:
-            for i, pos in enumerate(positions):
-                if i < len(self._shared_target):
-                    self._shared_target[i] = math.degrees(pos)
+        # 仅首次同步共享目标数组（初始化），之后由命令驱动
+        if not self._shared_target_initialized:
+            with self._shared_target_lock:
+                for i, pos in enumerate(positions):
+                    if i < len(self._shared_target):
+                        self._shared_target[i] = math.degrees(pos)
+                self._shared_target_initialized = True
+            self.get_logger().info('共享目标数组已从sim状态初始化')
 
         # 底盘角度桥接: D1 (index 0)
         if self._base_angle_pub and len(positions) > 0:
