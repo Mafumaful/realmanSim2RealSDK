@@ -27,6 +27,7 @@ import math
 import time
 import threading
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
@@ -55,6 +56,67 @@ ARM_DEFAULTS = {
     'arm_b': {'ip': '192.168.1.19', 'port': 8080, 'id': 'B'},
     'arm_s': {'ip': '192.168.1.20', 'port': 8080, 'id': 'S'},
 }
+
+# ═══════════════════════════════════════════════════════════
+# 臂基座配置 (基于 URDF joint_platform_A1/B1 标定)
+# 用于世界坐标 → 臂基座坐标变换
+# ═══════════════════════════════════════════════════════════
+ARM_BASE_MAP = {
+    'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
+    'arm_a': {
+        'offset': np.array([0.15605, 0.14202, 0.17264]),
+        'yaw_deg': 47.372,
+        'roll_rad': -math.pi / 2,
+    },
+    'arm_b': {
+        'offset': np.array([-0.14289, 0.15524, 0.17264]),
+        'yaw_deg': -42.628,
+        'roll_rad': -math.pi / 2,
+    },
+}
+
+
+def _world_to_arm_base(x, y, z, rx, ry, rz, arm_key, d1_deg):
+    """世界坐标 → 臂基座坐标 (含 -90° roll 补偿)
+
+    Args:
+        x, y, z: 世界系位置 (米)
+        rx, ry, rz: 世界系姿态欧拉角 (弧度, sxyz)
+        arm_key: 'arm_a' 或 'arm_b'
+        d1_deg: D1 底盘当前角度 (度)
+
+    Returns:
+        (ax, ay, az, arx, ary, arz) 臂基座系下的位姿
+    """
+    cfg = ARM_BASE_MAP[arm_key]
+    center = ARM_BASE_MAP['rotation_center']
+
+    # 臂基座在世界系的位置
+    theta_d1 = np.radians(d1_deg)
+    c1, s1 = np.cos(theta_d1), np.sin(theta_d1)
+    R_d1 = np.array([[c1, -s1, 0], [s1, c1, 0], [0, 0, 1]])
+    arm_pos = center + R_d1 @ cfg['offset']
+
+    # 臂基座完整旋转: Rz(yaw+d1) @ Rx(roll)
+    total_yaw = np.radians(cfg['yaw_deg'] + d1_deg)
+    cy, sy = np.cos(total_yaw), np.sin(total_yaw)
+    R_z = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+
+    cr, sr = np.cos(cfg['roll_rad']), np.sin(cfg['roll_rad'])
+    R_x = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+
+    R_arm = R_z @ R_x  # 世界→臂基座的旋转
+
+    # 位置变换
+    delta = np.array([x, y, z]) - arm_pos
+    pos_arm = R_arm.T @ delta
+
+    # 姿态变换
+    R_target = txe.euler2mat(rx, ry, rz, 'sxyz')
+    R_in_arm = R_arm.T @ R_target
+    rot_arm = txe.mat2euler(R_in_arm, 'sxyz')
+
+    return (*pos_arm, *rot_arm)
 
 
 def pose_to_xyzrpy(pose: Pose):
@@ -97,6 +159,8 @@ class ArmBridge:
         self._motion_lock = threading.Lock()
         # sim模式运动取消信号
         self._stop_event = threading.Event()
+        # D1角度获取回调 (由 UnifiedArmNode 设置)
+        self._get_d1_angle = None
 
         prefix = f'{arm_name}/'
 
@@ -139,6 +203,10 @@ class ArmBridge:
         fn(indices, joints_rad) → 更新共享23关节数组并发布
         """
         self._publish_shared_target = fn
+
+    def set_d1_angle_fn(self, fn):
+        """设置D1角度获取回调: fn() → float (度)"""
+        self._get_d1_angle = fn
 
     def connect_sdk(self) -> bool:
         ok = self._sdk.connect()
@@ -229,21 +297,31 @@ class ArmBridge:
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: Pose → SDK IK解算 → 关节角度 → /target_joints"""
+        """sim模式: 世界Pose → 臂基座系变换 → SDK IK → 关节角度 → /target_joints"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
+
+        # 世界坐标 → 臂基座坐标
+        d1 = self._get_d1_angle() if self._get_d1_angle else 0.0
+        ax, ay, az, arx, ary, arz = _world_to_arm_base(
+            x, y, z, rx, ry, rz, self.arm_name, d1)
+
+        self.logger.info(
+            f'{self._tag} D1={d1:.1f}° '
+            f'世界=[{x:.4f},{y:.4f},{z:.4f}] '
+            f'臂基座=[{ax:.4f},{ay:.4f},{az:.4f}]')
 
         with self._lock:
             q_ref = list(self._current_joints)
 
         joints = self._sdk.inverse_kinematics(
-            x, y, z, rx, ry, rz, q_ref=q_ref)
+            ax, ay, az, arx, ary, arz, q_ref=q_ref)
 
         if joints is None:
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
-                f'(target=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
+                f'(臂基座=[{ax:.3f},{ay:.3f},{az:.3f},{arx:.3f},{ary:.3f},{arz:.3f}])')
             return False
 
         return self._sim_move_joints(joints)
@@ -417,6 +495,7 @@ class UnifiedArmNode(Node):
                 sim_motion_timeout=self._sim_motion_timeout)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
+                bridge.set_d1_angle_fn(self._get_current_d1)
             bridge.connect_sdk()
             self._bridges[arm_name] = bridge
 
@@ -456,6 +535,11 @@ class UnifiedArmNode(Node):
             self._base_angle_pub.publish(angle_msg)
 
     # ─── 共享目标管理 (sim模式) ───
+
+    def _get_current_d1(self) -> float:
+        """获取当前D1角度 (度)"""
+        with self._d1_lock:
+            return self._current_d1_angle
 
     def _update_and_publish_target(self, indices, joints_rad):
         """更新共享23关节目标数组的指定部分并发布
