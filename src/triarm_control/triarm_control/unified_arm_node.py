@@ -297,31 +297,25 @@ class ArmBridge:
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: 世界Pose → 臂基座系变换 → SDK IK → 关节角度 → /target_joints"""
+        """sim模式: 臂基座Pose → SDK IK → 关节角度 → /target_joints"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
 
-        # 世界坐标 → 臂基座坐标
-        d1 = self._get_d1_angle() if self._get_d1_angle else 0.0
-        ax, ay, az, arx, ary, arz = _world_to_arm_base(
-            x, y, z, rx, ry, rz, self.arm_name, d1)
-
         self.logger.info(
-            f'{self._tag} D1={d1:.1f}° '
-            f'世界=[{x:.4f},{y:.4f},{z:.4f}] '
-            f'臂基座=[{ax:.4f},{ay:.4f},{az:.4f}]')
+            f'{self._tag} '
+            f'臂基座=[{x:.4f},{y:.4f},{z:.4f}]')
 
         with self._lock:
             q_ref = list(self._current_joints)
 
         joints = self._sdk.inverse_kinematics(
-            ax, ay, az, arx, ary, arz, q_ref=q_ref)
+            x, y, z, rx, ry, rz, q_ref=q_ref)
 
         if joints is None:
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
-                f'(臂基座=[{ax:.3f},{ay:.3f},{az:.3f},{arx:.3f},{ary:.3f},{arz:.3f}])')
+                f'(臂基座=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
         return self._sim_move_joints(joints)
