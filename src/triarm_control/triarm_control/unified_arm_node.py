@@ -65,12 +65,12 @@ ARM_BASE_MAP = {
     'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
     'arm_a': {
         'offset': np.array([0.15605, 0.14202, 0.17264]),
-        'yaw_deg': 47.372,
+        'yaw_deg': -47.372,
         'roll_rad': -math.pi / 2,
     },
     'arm_b': {
         'offset': np.array([-0.14289, 0.15524, 0.17264]),
-        'yaw_deg': -42.628,
+        'yaw_deg': 42.628,
         'roll_rad': -math.pi / 2,
     },
 }
