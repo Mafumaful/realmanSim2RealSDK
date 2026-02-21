@@ -65,19 +65,17 @@ ARM_BASE_MAP = {
     'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
     'arm_a': {
         'offset': np.array([0.15605, 0.14202, 0.17264]),
-        'yaw_deg': -47.372,
-        'roll_rad': -math.pi / 2,
+        'euler_xyz_deg': (-90.0, 47.366, 65.398),
     },
     'arm_b': {
         'offset': np.array([-0.14289, 0.15524, 0.17264]),
-        'yaw_deg': 42.628,
-        'roll_rad': -math.pi / 2,
+        'euler_xyz_deg': (-90.0, -42.628, 0.002),
     },
 }
 
 
 def _world_to_arm_base(x, y, z, rx, ry, rz, arm_key, d1_deg):
-    """世界坐标 → 臂基座坐标 (含 -90° roll 补偿)
+    """世界坐标 → 臂基座坐标
 
     Args:
         x, y, z: 世界系位置 (米)
@@ -97,15 +95,9 @@ def _world_to_arm_base(x, y, z, rx, ry, rz, arm_key, d1_deg):
     R_d1 = np.array([[c1, -s1, 0], [s1, c1, 0], [0, 0, 1]])
     arm_pos = center + R_d1 @ cfg['offset']
 
-    # 臂基座完整旋转: Rz(yaw+d1) @ Rx(roll)
-    total_yaw = np.radians(cfg['yaw_deg'] + d1_deg)
-    cy, sy = np.cos(total_yaw), np.sin(total_yaw)
-    R_z = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-
-    cr, sr = np.cos(cfg['roll_rad']), np.sin(cfg['roll_rad'])
-    R_x = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-
-    R_arm = R_z @ R_x  # 世界→臂基座的旋转
+    # Rx(ex) @ Ry(ey) @ Rz(ez + d1)
+    ex, ey, ez = [np.radians(a) for a in cfg['euler_xyz_deg']]
+    R_arm = txe.euler2mat(ex, ey, ez + np.radians(d1_deg), 'rxyz')
 
     # 位置变换
     delta = np.array([x, y, z]) - arm_pos
@@ -137,7 +129,8 @@ class ArmBridge:
     def __init__(self, node: Node, arm_name: str, mode: str,
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
-                 sim_motion_timeout: float = 10.0):
+                 sim_motion_timeout: float = 10.0,
+):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -355,7 +348,8 @@ class ArmBridge:
                 return True
 
         self.logger.warn(
-            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s)')
+            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s) '
+            f'max_err={max_err:.4f} rad ({math.degrees(max_err):.2f}°)')
         return False
 
     # ─── 状态反馈 ───
@@ -413,10 +407,10 @@ class ArmBridge:
 
     def update_joints_from_sim(self, joint_positions: list):
         """从 /joint_states (Isaac Sim) 更新臂关节状态"""
+        vals = [joint_positions[idx] if idx < len(joint_positions) else 0.0
+                for idx in self._joint_indices]
         with self._lock:
-            for i, idx in enumerate(self._joint_indices):
-                if idx < len(joint_positions):
-                    self._current_joints[i] = joint_positions[idx]
+            self._current_joints = vals
 
 
 class UnifiedArmNode(Node):
@@ -435,9 +429,8 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_s.port', 8080)
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
-        self.declare_parameter('sim_joint_tolerance', 0.02)
+        self.declare_parameter('sim_joint_tolerance', 0.03)
         self.declare_parameter('sim_motion_timeout', 10.0)
-
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
         rate = self.get_parameter('publish_rate').value
