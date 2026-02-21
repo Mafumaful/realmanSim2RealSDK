@@ -30,6 +30,7 @@ from typing import List, Optional
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
@@ -560,6 +561,9 @@ class UnifiedArmNode(Node):
 
         self.get_logger().info('S臂接口预留，暂未启用')
 
+        # 参数变更回调: 同步 pose_P_* 到各臂 bridge
+        self.add_on_set_parameters_callback(self._on_param_change)
+
         # sim模式: 订阅 /joint_states 获取仿真反馈
         if mode == 'sim':
             self._sim_state_sub = self.create_subscription(
@@ -572,6 +576,15 @@ class UnifiedArmNode(Node):
             period, self._publish_states)
 
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
+
+    def _on_param_change(self, params):
+        for p in params:
+            for arm_name, bridge in self._bridges.items():
+                if p.name == f'pose_P_{arm_name}':
+                    bridge._pose_P_Bi = list(p.value)
+                    self.get_logger().info(
+                        f'{arm_name} pose_P_Bi 已更新: {bridge._pose_P_Bi}')
+        return SetParametersResult(successful=True)
 
     def _sim_state_cb(self, msg: JointState):
         """从 Isaac Sim /joint_states 更新所有关节状态 (含夹爪)"""
