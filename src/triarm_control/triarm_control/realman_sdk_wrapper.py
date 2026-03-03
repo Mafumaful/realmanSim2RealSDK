@@ -3,13 +3,19 @@
 RealMan RM65 官方SDK封装 - 模式感知统一接口
 
 双模式：
-  sim:  SDK Algo 解算 IK/FK (纯本地，无需TCP)
-  real: SDK Algo 解算 + RoboticArm TCP 控制真实机械臂
+  sim:  RM65Robot IK/FK 解算 (支持自定义base坐标系) + SDK Algo 辅助功能
+  real: RM65Robot IK/FK 解算 + SDK Algo 辅助功能 + RoboticArm TCP 控制真实机械臂
 
 调用方只需:
-  sdk = RealManSDKWrapper(ip, port, arm_id, mode='sim')
+  sdk = RealManSDKWrapper(
+      ip, port, arm_id, mode='sim',
+      base_position=[x, y, z],
+      base_orientation_deg=[rx, ry, rz],
+      d6_mm=172.5
+  )
   sdk.connect()          # 内部根据 mode 自动初始化
-  sdk.inverse_kinematics(...)  # 两种模式都可用
+  sdk.inverse_kinematics(...)  # 使用 RM65Robot 进行 IK 解算
+  sdk.forward_kinematics(...)  # 使用 RM65Robot 进行 FK 解算
   sdk.movel(...)         # real模式走TCP, sim模式返回NOT_CONNECTED
 
 依赖: pip install Robotic_Arm
@@ -57,37 +63,63 @@ def matrix_inverse(M):
 
 
 class RealManAlgo:
-    """RealMan 算法库封装 - SDK内部IK/FK解算引擎
+    """RealMan 算法库封装 - 使用 RM65Robot 进行 IK/FK 解算
 
-    基于官方 Robotic_Arm.rm_robot_interface.Algo，
+    基于 rm65_robot.RM65Robot，支持自定义 base 坐标系，
     纯本地计算，不需要TCP连接。
+    同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos/pose_move）。
     """
 
-    def __init__(self):
-        self._algo = None
+    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=172.5):
+        """
+        初始化算法库
+
+        Args:
+            base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
+            base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
+            d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+        """
+        self._robot = None  # RM65Robot 实例（用于 IK/FK）
+        self._algo = None   # 原始 SDK Algo 实例（用于辅助功能）
         self._initialized = False
         self._lock = threading.Lock()
+        self._base_position = base_position or [0.0, 0.0, 0.0]
+        self._base_orientation_deg = base_orientation_deg or [0.0, 0.0, 0.0]
+        self._d6_mm = d6_mm
 
     def initialize(self) -> bool:
         """初始化算法库"""
         if self._initialized:
             return True
         try:
-            from Robotic_Arm.rm_robot_interface import (
-                Algo,
-                rm_robot_arm_model_e,
-                rm_force_type_e,
+            # 初始化 RM65Robot (用于 IK/FK)
+            from .rm65_robot import RM65Robot
+            self._robot = RM65Robot(
+                base_position=self._base_position,
+                base_orientation_deg=self._base_orientation_deg,
+                d6_mm=self._d6_mm,
             )
-            self._algo = Algo(
-                rm_robot_arm_model_e.RM_MODEL_RM_65_E,
-                rm_force_type_e.RM_MODEL_RM_B_E,
-            )
-            version = self._algo.rm_algo_version()
-            print(f'[Algo] 初始化成功, version={version}')
+            print(f'[Algo] RM65Robot 初始化成功, base_pos={self._base_position}, base_ori={self._base_orientation_deg}')
+
+            # 初始化原始 SDK Algo (用于辅助功能)
+            try:
+                from Robotic_Arm.rm_robot_interface import (
+                    Algo,
+                    rm_robot_arm_model_e,
+                    rm_force_type_e,
+                )
+                self._algo = Algo(
+                    rm_robot_arm_model_e.RM_MODEL_RM_65_E,
+                    rm_force_type_e.RM_MODEL_RM_B_E,
+                )
+                print(f'[Algo] SDK Algo 初始化成功 (用于辅助功能)')
+            except Exception as e:
+                print(f'[Algo] SDK Algo 初始化失败: {e}，辅助功能不可用')
+
             self._initialized = True
             return True
-        except ImportError:
-            print('[Algo] 未安装 Robotic_Arm SDK (pip install Robotic_Arm)')
+        except ImportError as e:
+            print(f'[Algo] 未安装 Robotic_Arm SDK (pip install Robotic_Arm): {e}')
             return False
         except Exception as e:
             print(f'[Algo] 初始化失败: {e}')
@@ -108,8 +140,8 @@ class RealManAlgo:
         Args:
             q_ref_deg: 参考关节角度 [j1..j6] (角度制)
             target_pose: 目标位姿 [x,y,z,rx,ry,rz]
-                         位置(m), flag=1时姿态为欧拉角(弧度)
-            flag: 1=欧拉角, 0=四元数
+                         位置(m), 姿态为欧拉角(弧度)
+            flag: 保留参数，兼容旧接口
 
         Returns:
             关节角度列表 [j1..j6] (角度制), 失败返回 None
@@ -119,16 +151,24 @@ class RealManAlgo:
 
         with self._lock:
             try:
-                from Robotic_Arm.rm_robot_interface import (
-                    rm_inverse_kinematics_params_t,
+                # RM65Robot.inverse_kinematics 需要的参数:
+                # - target_position: [x,y,z] m
+                # - target_orientation_deg: [rx,ry,rz] deg (可选)
+                # - current_joint_angles_deg: [j1..j6] deg
+                target_position = target_pose[:3]
+                target_orientation_deg = [math.degrees(target_pose[3]),
+                                         math.degrees(target_pose[4]),
+                                         math.degrees(target_pose[5])]
+
+                result = self._robot.inverse_kinematics(
+                    target_position=target_position,
+                    target_orientation_deg=target_orientation_deg,
+                    current_joint_angles_deg=q_ref_deg
                 )
-                # 尝试多个参考角度
-                refs_to_try = [q_ref_deg, [0.0]*6, [0, -20, -70, 0, -90, 0]]
-                for ref in refs_to_try:
-                    params = rm_inverse_kinematics_params_t(ref, target_pose, flag)
-                    result = self._algo.rm_algo_inverse_kinematics(params)
-                    if isinstance(result, (list, tuple)) and result[0] == 0:
-                        return list(result[1])
+
+                if result and result.get('success'):
+                    return result['joint_angles_deg']
+
                 print(f'[Algo] IK失败: pose={target_pose[:3]}')
                 return None
             except Exception as e:
@@ -136,8 +176,10 @@ class RealManAlgo:
                 return None
 
     def pos2matrix(self, pose: List[float]) -> Optional[List[float]]:
-        """位姿转4x4矩阵 (16元素列表)"""
-        if not self._initialized:
+        """位姿转4x4矩阵 (16元素列表)
+
+        使用原始 SDK Algo 实现"""
+        if not self._initialized or not self._algo:
             return None
         with self._lock:
             try:
@@ -153,8 +195,10 @@ class RealManAlgo:
                 return None
 
     def matrix2pos(self, matrix: List[float], flag: int = 1) -> Optional[List[float]]:
-        """矩阵转位姿"""
-        if not self._initialized:
+        """矩阵转位姿
+
+        使用原始 SDK Algo 实现"""
+        if not self._initialized or not self._algo:
             return None
         with self._lock:
             try:
@@ -174,13 +218,14 @@ class RealManAlgo:
                 return None
 
     def pose_move(self, pose: List[float], delta: List[float], mode: int = 1) -> Optional[List[float]]:
-        """位姿叠加 (delta角度单位为度)"""
-        if not self._initialized:
+        """位姿叠加 (delta角度单位为度)
+
+        使用原始 SDK Algo 实现"""
+        if not self._initialized or not self._algo:
             return None
         with self._lock:
             try:
                 result = self._algo.rm_algo_pose_move(pose, delta, mode)
-                print(f'[Algo] pose_move: pose={pose}, delta={delta}, result={result}')
                 if isinstance(result, (list, tuple)) and result[0] == 0:
                     return list(result[1])
                 return None
@@ -197,21 +242,22 @@ class RealManAlgo:
 
         Args:
             joints_deg: 关节角度 [j1..j6] (角度制)
-            flag: 1=欧拉角输出, 0=四元数输出
+            flag: 保留参数，兼容旧接口
 
         Returns:
-            位姿 [x,y,z,rx,ry,rz] 或 None
+            位姿 [x,y,z,rx,ry,rz] (姿态单位为弧度) 或 None
         """
         if not self._initialized:
             return None
 
         with self._lock:
             try:
-                result = self._algo.rm_algo_forward_kinematics(
-                    joints_deg, flag)
-                if isinstance(result, (list, tuple)):
-                    if result[0] == 0:
-                        return list(result[1])
+                # RM65Robot.forward_kinematics 返回字典:
+                # {'position': [x,y,z], 'euler_deg': [rx,ry,rz], 'euler_rad': [rx,ry,rz]}
+                result = self._robot.forward_kinematics(joints_deg)
+                if result is not None:
+                    # 返回 [x,y,z,rx,ry,rz]，姿态单位为弧度
+                    return result['position'] + result['euler_rad']
                 return None
             except Exception as e:
                 print(f'[Algo] FK异常: {e}')
@@ -222,16 +268,20 @@ class RealManSDKWrapper:
     """RealMan RM65 官方SDK封装 - 模式感知统一接口
 
     每臂一个实例，内部根据 mode 自动路由：
-      sim:  Algo 解算 (无TCP)
-      real: Algo 解算 + RoboticArm TCP 控制
+      sim:  RM65Robot IK/FK 解算 (支持自定义base坐标系)
+      real: RM65Robot IK/FK 解算 + RoboticArm TCP 控制
 
     调用方无需关心 Algo 细节，只需 connect() + 调用接口。
+    支持自定义机械臂 base 坐标系参数，提高 IK/FK 精度。
     """
 
     DOF = 6
 
     def __init__(self, ip: str, port: int = 8080, arm_id: str = 'A',
-                 mode: str = 'real', algo: RealManAlgo = None):
+                 mode: str = 'real', algo: RealManAlgo = None,
+                 base_position: List[float] = None,
+                 base_orientation_deg: List[float] = None,
+                 d6_mm: float = 172.5):
         """
         Args:
             ip: 机械臂IP地址
@@ -239,6 +289,9 @@ class RealManSDKWrapper:
             arm_id: 臂标识 (A/B/S)
             mode: 'sim' 或 'real'
             algo: 共享的Algo实例 (可选，不传则内部创建)
+            base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
+            base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
+            d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
         """
         self._ip = ip
         self._port = port
@@ -250,8 +303,15 @@ class RealManSDKWrapper:
         self._robot = None
         self._tcp_connected = False
 
-        # Algo: 多臂可共享同一个实例
-        self._algo = algo if algo is not None else RealManAlgo()
+        # Algo: 如果未传入则创建新实例（使用 base 参数）
+        if algo is not None:
+            self._algo = algo
+        else:
+            self._algo = RealManAlgo(
+                base_position=base_position,
+                base_orientation_deg=base_orientation_deg,
+                d6_mm=d6_mm
+            )
 
     @property
     def mode(self) -> str:
