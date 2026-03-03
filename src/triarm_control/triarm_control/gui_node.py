@@ -96,6 +96,10 @@ class JointControlGUI(Node):
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
         self.has_state = False
 
+        # 算法库 (持久化实例，避免每次重建)
+        self._algo = RealManAlgo()
+        self._algo.initialize()
+
         # GUI组件
         self.entries = []
         self.sliders = []
@@ -546,11 +550,10 @@ class JointControlGUI(Node):
     def _gen_random_reachable(self):
         """随机生成可达点 (通过FK) → 转换到世界坐标系"""
         import random
-        from Robotic_Arm.rm_robot_interface import Algo, rm_robot_arm_model_e, rm_force_type_e
-        try:
-            algo = Algo(rm_robot_arm_model_e.RM_MODEL_RM_65_E, rm_force_type_e.RM_MODEL_RM_B_E)
-        except Exception as e:
-            self.world_pose_status.config(text=f'Algo初始化失败: {e}', foreground='red')
+
+        algo = self._algo
+        if not algo.is_ready:
+            self.world_pose_status.config(text='Algo未就绪', foreground='red')
             return
 
         arm = self.target_arm_var.get()
@@ -561,28 +564,20 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
-        ret = algo.rm_algo_forward_kinematics(joints_deg, 1)
-        self.get_logger().info(f'FK原始返回: {ret}')
-        if isinstance(ret, (list, tuple)) and len(ret) == 6:
-            pose_Bi_T = ret
-        elif isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
-            pose_Bi_T = ret[1]
-        else:
-            self.world_pose_status.config(text=f'FK失败', foreground='red')
+        # FK (通过RealManAlgo封装，已正确设置机械臂型号)
+        pose_fk = algo.forward_kinematics(joints_deg, 1)
+        if pose_fk is None:
+            self.world_pose_status.config(text='FK失败', foreground='red')
             return
+        self.get_logger().info(f'FK位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
 
-        # FK返回 m+rad，直接使用
-        pose_fk = list(pose_Bi_T)
+        # 验证IK (通过RealManAlgo封装)
+        ik_result = algo.inverse_kinematics(joints_deg, pose_fk, 1)
+        ik_ok = ik_result is not None
+        self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
 
-        # 验证IK
-        from Robotic_Arm.rm_robot_interface import rm_inverse_kinematics_params_t
-        ik_params = rm_inverse_kinematics_params_t(joints_deg, pose_fk, 1)
-        ik_ret = algo.rm_algo_inverse_kinematics(ik_params)
-        self.get_logger().info(f'IK返回: {ik_ret}')
-        ik_ok = isinstance(ik_ret, tuple) and ik_ret[0] == 0
-
-        # 臂基座系 → 世界坐标系 (m+rad)
-        pose_W_T = self._base_to_world(algo, arm, pose_fk)
+        # 臂基座系 → 世界坐标系
+        pose_W_T = self._base_to_world(arm, pose_fk)
         if pose_W_T is None:
             self.world_pose_status.config(text='坐标变换失败', foreground='red')
             return
@@ -592,20 +587,17 @@ class JointControlGUI(Node):
             e.insert(0, f'{pose_W_T[i]:.4f}')
 
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
-        self.get_logger().info(f'FK位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
-        self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
         status = '已生成' if ik_ok else '已生成(IK可能失败)'
         self.world_pose_status.config(text=status, foreground='green' if ik_ok else 'orange')
 
-    def _base_to_world(self, algo, arm: str, pose_Bi_T: list):
+    def _base_to_world(self, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿
         Args:
             pose_Bi_T: [x,y,z,rx,ry,rz] m+rad (臂基座系)
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
-        from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
-        import ctypes
+        algo = self._algo
 
         # 从标定参数获取变换 (平台到臂基座, m+rad)
         pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
@@ -614,36 +606,23 @@ class JointControlGUI(Node):
         d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
         d1_rad = math.radians(-d1_deg)
 
-        # pos2matrix (SDK单位: m+rad)
-        ret_wp = algo.rm_algo_pos2matrix([0, 0, 0, 0, 0, d1_rad])
-        ret_pb = algo.rm_algo_pos2matrix(pose_P_Bi)
-        ret_bt = algo.rm_algo_pos2matrix(pose_Bi_T)
+        # pos2matrix (通过RealManAlgo封装)
+        T_W_P = algo.pos2matrix([0, 0, 0, 0, 0, d1_rad])
+        T_P_Bi = algo.pos2matrix(pose_P_Bi)
+        T_Bi_T = algo.pos2matrix(pose_Bi_T)
 
-        try:
-            T_W_P = list(ret_wp.data)
-            T_P_Bi = list(ret_pb.data)
-            T_Bi_T = list(ret_bt.data)
-        except Exception as e:
-            self.get_logger().error(f'矩阵提取失败: {e}')
+        if T_W_P is None or T_P_Bi is None or T_Bi_T is None:
+            self.get_logger().error(f'pos2matrix失败')
             return None
 
         # T_W_T = T_W_P × T_P_Bi × T_Bi_T
         T_W_Bi = matrix_multiply(T_W_P, T_P_Bi)
         T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
 
-        # 创建 rm_matrix_t 对象
-        matrix_obj = rm_matrix_t()
-        matrix_obj.data = (ctypes.c_float * 16)(*T_W_T)
-
-        ret3 = algo.rm_algo_matrix2pos(matrix_obj, 1)
-
-        # matrix2pos 返回 [x,y,z,rx,ry,rz] (m+rad)
-        if isinstance(ret3, (list, tuple)) and len(ret3) == 6:
-            pose_W_T = ret3
-        elif isinstance(ret3, (list, tuple)) and len(ret3) >= 2 and ret3[0] == 0:
-            pose_W_T = ret3[1]
-        else:
-            self.get_logger().error(f'matrix2pos 失败: {ret3}')
+        # matrix2pos (通过RealManAlgo封装)
+        pose_W_T = algo.matrix2pos(T_W_T, 1)
+        if pose_W_T is None:
+            self.get_logger().error(f'matrix2pos失败')
             return None
 
         return list(pose_W_T)
