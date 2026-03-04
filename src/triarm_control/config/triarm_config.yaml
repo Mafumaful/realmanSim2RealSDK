@@ -78,3 +78,12 @@ triarm_gui:
     namespace: "robot"
     gui_width: 700
     gui_height: 600
+    # per-arm base 参数 (与 unified_arm_node 一致, 用于 GUI 内 FK/IK 计算)
+    arm_a:
+      base_position: [0.05457, -0.04863, 0.2273]
+      base_orientation_deg: [45.0, 90.0, 0.0]
+      d6_mm: 172.5
+    arm_b:
+      base_position: [0.0, 0.0, 0.0]
+      base_orientation_deg: [0.0, 0.0, 0.0]
+      d6_mm: 172.5

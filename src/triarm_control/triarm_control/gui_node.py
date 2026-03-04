@@ -35,6 +35,14 @@ class JointControlGUI(Node):
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 600)
 
+        # per-arm base 参数 (与 unified_arm_node 一致, 用于 RM65Robot IK/FK)
+        self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
+        self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
+        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_b.base_position', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_b.base_orientation_deg', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_b.d6_mm', 172.5)
+
         # 获取参数
         ns = self.get_parameter('namespace').value
         self.gui_width = self.get_parameter('gui_width').value
@@ -96,9 +104,17 @@ class JointControlGUI(Node):
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
         self.has_state = False
 
-        # 算法库 (持久化实例，避免每次重建)
-        self._algo = RealManAlgo()
-        self._algo.initialize()
+        # per-arm 算法库 (带各自 base 参数, 与 unified_arm_node 保持一致)
+        self._algos = {}
+        for arm in ['arm_a', 'arm_b']:
+            bp = list(self.get_parameter(f'{arm}.base_position').value)
+            bo = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
+            d6 = self.get_parameter(f'{arm}.d6_mm').value
+            algo = RealManAlgo(base_position=bp, base_orientation_deg=bo, d6_mm=d6)
+            algo.initialize()
+            self._algos[arm] = algo
+        # 默认引用 (向后兼容其他使用 pos2matrix/matrix2pos 的地方)
+        self._algo = self._algos['arm_a']
 
         # GUI组件
         self.entries = []
@@ -548,15 +564,24 @@ class JointControlGUI(Node):
                 foreground='red')
 
     def _gen_random_reachable(self):
-        """随机生成可达点 (通过FK) → 转换到世界坐标系"""
+        """随机生成可达点 (通过FK) → 世界坐标系位姿
+
+        使用 per-arm algo (带正确 base 参数 + D1 转盘角度),
+        FK 直接输出世界坐标系位姿, 与 unified_arm_node 的 IK 变换链一致。
+        """
         import random
 
-        algo = self._algo
-        if not algo.is_ready:
+        arm = self.target_arm_var.get()
+        algo = self._algos.get(arm)
+        if not algo or not algo.is_ready:
             self.world_pose_status.config(text='Algo未就绪', foreground='red')
             return
 
-        arm = self.target_arm_var.get()
+        # 设置 D1 转盘角度 (与 unified_arm_node.world_pose_to_joints 一致: 取反)
+        d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
+        algo._robot.set_turntable_angle(-d1_deg)
+
+        # 随机关节角度
         arm_prefix = 'A' if arm == 'arm_a' else 'B'
         arm_joints = [f'joint_platform_{arm_prefix}{i}' for i in range(1, 7)]
         joints_deg = []
@@ -564,31 +589,28 @@ class JointControlGUI(Node):
             lo, hi = JOINT_LIMITS[name]
             joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
 
-        # FK (通过RealManAlgo封装，已正确设置机械臂型号)
+        # FK → 世界坐标系位姿 (RM65Robot 内部已处理 turntable + base 变换)
         pose_fk = algo.forward_kinematics(joints_deg, 1)
         if pose_fk is None:
             self.world_pose_status.config(text='FK失败', foreground='red')
             return
-        self.get_logger().info(f'FK位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
+        self.get_logger().info(
+            f'FK世界位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
 
-        # 验证IK (通过RealManAlgo封装)
+        # IK 验证 (用同一个 per-arm algo, 与 unified_arm_node 保持一致)
         ik_result = algo.inverse_kinematics(joints_deg, pose_fk, 1)
         ik_ok = ik_result is not None
-        self.get_logger().info(f'直接IK验证: {"成功" if ik_ok else "失败"}')
+        self.get_logger().info(f'IK验证: {"成功" if ik_ok else "失败"}')
 
-        # 臂基座系 → 世界坐标系
-        pose_W_T = self._base_to_world(arm, pose_fk)
-        if pose_W_T is None:
-            self.world_pose_status.config(text='坐标变换失败', foreground='red')
-            return
-
+        # 填入 GUI
         for i, e in enumerate(self.world_pose_entries):
             e.delete(0, tk.END)
-            e.insert(0, f'{pose_W_T[i]:.4f}')
+            e.insert(0, f'{pose_fk[i]:.4f}')
 
         self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
         status = '已生成' if ik_ok else '已生成(IK可能失败)'
-        self.world_pose_status.config(text=status, foreground='green' if ik_ok else 'orange')
+        self.world_pose_status.config(
+            text=status, foreground='green' if ik_ok else 'orange')
 
     def _base_to_world(self, arm: str, pose_Bi_T: list):
         """臂基座系位姿 → 世界坐标系位姿
@@ -597,7 +619,7 @@ class JointControlGUI(Node):
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
-        algo = self._algo
+        algo = self._algos.get(arm, self._algo)
 
         # 从标定参数获取变换 (平台到臂基座, m+rad)
         pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
