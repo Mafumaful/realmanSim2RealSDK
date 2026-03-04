@@ -487,8 +487,14 @@ class JointControlGUI(Node):
         """从配置文件加载标定参数"""
         import os
         import yaml
-        config_path = os.path.join(
-            os.path.dirname(__file__), '..', 'config', 'triarm_config.yaml')
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            pkg_share = get_package_share_directory('triarm_control')
+            config_path = os.path.join(pkg_share, 'config', 'triarm_config.yaml')
+        except Exception:
+            # fallback: 开发模式下直接用相对路径
+            config_path = os.path.join(
+                os.path.dirname(__file__), '..', 'config', 'triarm_config.yaml')
         try:
             with open(config_path, 'r') as f:
                 cfg = yaml.safe_load(f)
