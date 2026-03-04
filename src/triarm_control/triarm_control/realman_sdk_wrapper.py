@@ -26,6 +26,8 @@ import threading
 from enum import Enum
 from typing import List, Optional
 
+import numpy as np
+
 
 class SDKMotionResult(Enum):
     SUCCESS = 0
@@ -33,34 +35,6 @@ class SDKMotionResult(Enum):
     TIMEOUT = 2
     NOT_CONNECTED = 3
     IK_FAILED = 4
-
-
-def matrix_multiply(A, B):
-    """4x4矩阵乘法 (16元素列表)"""
-    result = [0.0] * 16
-    for i in range(4):
-        for j in range(4):
-            for k in range(4):
-                result[i * 4 + j] += A[i * 4 + k] * B[k * 4 + j]
-    return result
-
-
-def matrix_inverse(M):
-    """4x4齐次变换矩阵求逆 (16元素列表)"""
-    # R^T
-    R_T = [
-        M[0], M[4], M[8], 0,
-        M[1], M[5], M[9], 0,
-        M[2], M[6], M[10], 0,
-        0, 0, 0, 1
-    ]
-    # -R^T * t
-    tx = -(R_T[0]*M[3] + R_T[1]*M[7] + R_T[2]*M[11])
-    ty = -(R_T[4]*M[3] + R_T[5]*M[7] + R_T[6]*M[11])
-    tz = -(R_T[8]*M[3] + R_T[9]*M[7] + R_T[10]*M[11])
-    R_T[3], R_T[7], R_T[11] = tx, ty, tz
-    return R_T
-
 
 class RealManAlgo:
     """RealMan 算法库封装 - 使用 RM65Robot 进行 IK/FK 解算
@@ -175,8 +149,13 @@ class RealManAlgo:
                 print(f'[Algo] IK异常: {e}')
                 return None
 
-    def pos2matrix(self, pose: List[float]) -> Optional[List[float]]:
-        """位姿转4x4矩阵 (16元素列表)
+    def pos2matrix(self, pose: List[float]) -> Optional[np.ndarray]:
+        """位姿转4x4齐次变换矩阵
+
+        Args:
+            pose: [x,y,z,rx,ry,rz] 位置(m)+姿态(rad)
+        Returns:
+            np.ndarray(4,4) 齐次变换矩阵, 失败返回 None
 
         使用原始 SDK Algo 实现"""
         if not self._initialized or not self._algo:
@@ -186,16 +165,22 @@ class RealManAlgo:
                 result = self._algo.rm_algo_pos2matrix(pose)
                 # SDK可能返回 rm_matrix_t 对象或 (code, data) 元组
                 if hasattr(result, 'data'):
-                    return list(result.data)
+                    return np.array(result.data, dtype=np.float64).reshape(4, 4)
                 elif isinstance(result, (list, tuple)) and result[0] == 0:
-                    return list(result[1])
+                    return np.array(result[1], dtype=np.float64).reshape(4, 4)
                 return None
             except Exception as e:
                 print(f'[Algo] pos2matrix异常: {e}')
                 return None
 
-    def matrix2pos(self, matrix: List[float], flag: int = 1) -> Optional[List[float]]:
-        """矩阵转位姿
+    def matrix2pos(self, matrix: np.ndarray, flag: int = 1) -> Optional[List[float]]:
+        """4x4齐次变换矩阵转位姿
+
+        Args:
+            matrix: np.ndarray(4,4) 齐次变换矩阵
+            flag: 1=欧拉角输出
+        Returns:
+            [x,y,z,rx,ry,rz] 位置(m)+姿态(rad), 失败返回 None
 
         使用原始 SDK Algo 实现"""
         if not self._initialized or not self._algo:
@@ -205,7 +190,8 @@ class RealManAlgo:
                 from Robotic_Arm.rm_ctypes_wrap import rm_matrix_t
                 import ctypes
                 matrix_obj = rm_matrix_t()
-                matrix_obj.data = (ctypes.c_float * 16)(*matrix)
+                flat = np.asarray(matrix, dtype=np.float32).flatten()
+                matrix_obj.data = (ctypes.c_float * 16)(*flat)
                 result = self._algo.rm_algo_matrix2pos(matrix_obj, flag)
                 # SDK可能返回列表或 (code, data) 元组
                 if isinstance(result, (list, tuple)) and len(result) == 6:

@@ -21,7 +21,7 @@ except ImportError:
 from rm_ros_interfaces.msg import Movel, Movejp
 from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
-from .realman_sdk_wrapper import RealManAlgo, matrix_multiply
+from .realman_sdk_wrapper import RealManAlgo
 
 
 class JointControlGUI(Node):
@@ -615,9 +615,9 @@ class JointControlGUI(Node):
             self.get_logger().error(f'pos2matrix失败')
             return None
 
-        # T_W_T = T_W_P × T_P_Bi × T_Bi_T
-        T_W_Bi = matrix_multiply(T_W_P, T_P_Bi)
-        T_W_T = matrix_multiply(T_W_Bi, T_Bi_T)
+        # T_W_T = T_W_P @ T_P_Bi @ T_Bi_T
+        T_W_Bi = T_W_P @ T_P_Bi
+        T_W_T = T_W_Bi @ T_Bi_T
 
         # matrix2pos (通过RealManAlgo封装)
         pose_W_T = algo.matrix2pos(T_W_T, 1)
