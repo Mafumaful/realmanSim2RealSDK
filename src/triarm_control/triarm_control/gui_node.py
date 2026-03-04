@@ -39,8 +39,8 @@ class JointControlGUI(Node):
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
         self.declare_parameter('arm_a.d6_mm', 172.5)
-        self.declare_parameter('arm_b.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_b.base_orientation_deg', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
+        self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
         self.declare_parameter('arm_b.d6_mm', 172.5)
 
         # 获取参数
