@@ -28,6 +28,7 @@ import time
 import threading
 from typing import List, Optional
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
@@ -56,6 +57,59 @@ ARM_DEFAULTS = {
     'arm_b': {'ip': '192.168.1.19', 'port': 8080, 'id': 'B'},
     'arm_s': {'ip': '192.168.1.20', 'port': 8080, 'id': 'S'},
 }
+
+# ═══════════════════════════════════════════════════════════
+# 臂基座配置 (基于 URDF joint_platform_A1/B1 标定)
+# 用于世界坐标 → 臂基座坐标变换
+# ═══════════════════════════════════════════════════════════
+ARM_BASE_MAP = {
+    'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
+    'arm_a': {
+        'offset': np.array([0.15605, 0.14202, 0.17264]),
+        'euler_xyz_deg': (-90.0, 47.366, 65.398),
+    },
+    'arm_b': {
+        'offset': np.array([-0.14289, 0.15524, 0.17264]),
+        'euler_xyz_deg': (-90.0, -42.628, 0.002),
+    },
+}
+
+
+def _world_to_arm_base(x, y, z, rx, ry, rz, arm_key, d1_deg):
+    """世界坐标 → 臂基座坐标
+
+    Args:
+        x, y, z: 世界系位置 (米)
+        rx, ry, rz: 世界系姿态欧拉角 (弧度, sxyz)
+        arm_key: 'arm_a' 或 'arm_b'
+        d1_deg: D1 底盘当前角度 (度)
+
+    Returns:
+        (ax, ay, az, arx, ary, arz) 臂基座系下的位姿
+    """
+    cfg = ARM_BASE_MAP[arm_key]
+    center = ARM_BASE_MAP['rotation_center']
+
+    # 臂基座在世界系的位置
+    theta_d1 = np.radians(d1_deg)
+    c1, s1 = np.cos(theta_d1), np.sin(theta_d1)
+    R_d1 = np.array([[c1, -s1, 0], [s1, c1, 0], [0, 0, 1]])
+    arm_pos = center + R_d1 @ cfg['offset']
+
+    # Rx(ex) @ Ry(ey) @ Rz(ez + d1)
+    ex, ey, ez = [np.radians(a) for a in cfg['euler_xyz_deg']]
+    R_arm = txe.euler2mat(ex, ey, ez + np.radians(d1_deg), 'rxyz')
+
+    # 位置变换
+    delta = np.array([x, y, z]) - arm_pos
+    pos_arm = R_arm.T @ delta
+
+    # 姿态变换
+    R_target = txe.euler2mat(rx, ry, rz, 'sxyz')
+    R_in_arm = R_arm.T @ R_target
+    rot_arm = txe.mat2euler(R_in_arm, 'sxyz')
+
+    return (*pos_arm, *rot_arm)
 
 
 def pose_to_xyzrpy(pose: Pose):
@@ -114,6 +168,8 @@ class ArmBridge:
         self._motion_lock = threading.Lock()
         # sim模式运动取消信号
         self._stop_event = threading.Event()
+        # D1角度获取回调 (由 UnifiedArmNode 设置)
+        self._get_d1_angle = None
 
         prefix = f'{arm_name}/'
 
@@ -352,7 +408,7 @@ class ArmBridge:
         if joints is None:
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
-                f'(target=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
+                f'(臂基座=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
         return self._sim_move_joints(joints)
@@ -404,7 +460,8 @@ class ArmBridge:
                 return True
 
         self.logger.warn(
-            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s)')
+            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s) '
+            f'max_err={max_err:.4f} rad ({math.degrees(max_err):.2f}°)')
         return False
 
     # ─── 状态反馈 ───
@@ -462,10 +519,10 @@ class ArmBridge:
 
     def update_joints_from_sim(self, joint_positions: list):
         """从 /joint_states (Isaac Sim) 更新臂关节状态"""
+        vals = [joint_positions[idx] if idx < len(joint_positions) else 0.0
+                for idx in self._joint_indices]
         with self._lock:
-            for i, idx in enumerate(self._joint_indices):
-                if idx < len(joint_positions):
-                    self._current_joints[i] = joint_positions[idx]
+            self._current_joints = vals
 
 
 class UnifiedArmNode(Node):
@@ -484,7 +541,7 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_s.port', 8080)
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
-        self.declare_parameter('sim_joint_tolerance', 0.02)
+        self.declare_parameter('sim_joint_tolerance', 0.03)
         self.declare_parameter('sim_motion_timeout', 10.0)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
@@ -585,15 +642,18 @@ class UnifiedArmNode(Node):
 
     def _sim_state_cb(self, msg: JointState):
         """从 Isaac Sim /joint_states 更新所有关节状态 (含夹爪)"""
-        positions = list(msg.position)
+        # 按名称映射，兼容 Isaac Sim 任意关节顺序
+        name_to_pos = dict(zip(msg.name, msg.position))
+        positions = [name_to_pos.get(n, 0.0) for n in JOINT_NAMES_LIST]
 
         # 更新臂关节
         for bridge in self._bridges.values():
             bridge.update_joints_from_sim(positions)
 
-        # 底盘角度桥接: D1 (index 0)
-        if self._base_angle_pub and len(positions) > 0:
-            d1_deg = math.degrees(positions[0])
+        # 底盘角度桥接: D1
+        d1_name = JOINT_NAMES_LIST[0]
+        if self._base_angle_pub and d1_name in name_to_pos:
+            d1_deg = math.degrees(name_to_pos[d1_name])
             with self._d1_lock:
                 self._current_d1_angle = d1_deg
             angle_msg = Float64()
