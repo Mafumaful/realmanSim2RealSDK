@@ -139,7 +139,6 @@ class JointControlGUI(Node):
         self._create_arm_tab(notebook, 'B', 7)
         self._create_arm_tab(notebook, 'S', 13)
         self._create_gripper_tab(notebook)
-        self._create_calibration_tab(notebook)
         self._create_world_pose_tab(notebook)
 
         # 按钮区域
@@ -251,37 +250,6 @@ class JointControlGUI(Node):
         ttk.Button(quick_frame, text='右夹爪闭合',
                    command=lambda: self._set_gripper('right', r_close)).pack(side='left', padx=5)
 
-    def _create_calibration_tab(self, notebook):
-        """创建坐标标定标签页"""
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text='坐标标定')
-
-        # 标定参数输入
-        self.calib_entries = {}
-        arms = [('arm_a', 'A臂'), ('arm_b', 'B臂'), ('arm_s', 'S臂')]
-        labels = ['x(m)', 'y(m)', 'z(m)', 'rx(rad)', 'ry(rad)', 'rz(rad)']
-
-        for row, (arm_key, arm_name) in enumerate(arms):
-            ttk.Label(frame, text=arm_name, font=('', 10, 'bold')).grid(
-                row=row*2, column=0, padx=5, pady=(10,0), sticky='w')
-            entry_frame = ttk.Frame(frame)
-            entry_frame.grid(row=row*2+1, column=0, columnspan=7, padx=5, pady=2, sticky='w')
-            self.calib_entries[arm_key] = []
-            for col, lbl in enumerate(labels):
-                ttk.Label(entry_frame, text=lbl).grid(row=0, column=col*2, padx=2)
-                e = ttk.Entry(entry_frame, width=8)
-                e.insert(0, '0.0')
-                e.grid(row=0, column=col*2+1, padx=2)
-                self.calib_entries[arm_key].append(e)
-
-        # 按钮
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=7, column=0, columnspan=7, pady=15)
-        ttk.Button(btn_frame, text='加载当前参数', command=self._load_calib_params).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text='应用参数', command=self._apply_calib_params).pack(side='left', padx=5)
-
-        # 启动时从配置文件加载
-        self._load_calib_from_config()
 
     def _create_world_pose_tab(self, notebook):
         """创建世界坐标位姿输入标签页"""
@@ -462,70 +430,6 @@ class JointControlGUI(Node):
         for idx, var, _, _ in self.sliders:
             var.set(0.0)
 
-    def _load_calib_params(self):
-        """从unified_arm_node加载标定参数"""
-        from rcl_interfaces.srv import GetParameters
-        client = self.create_client(GetParameters, '/unified_arm_node/get_parameters')
-        if not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('unified_arm_node参数服务不可用')
-            return
-        request = GetParameters.Request()
-        request.names = ['pose_P_arm_a', 'pose_P_arm_b', 'pose_P_arm_s']
-        future = client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-        if future.done():
-            resp = future.result()
-            for i, arm in enumerate(['arm_a', 'arm_b', 'arm_s']):
-                if i < len(resp.values) and resp.values[i].double_array_value:
-                    vals = resp.values[i].double_array_value
-                    for j, e in enumerate(self.calib_entries[arm]):
-                        e.delete(0, tk.END)
-                        e.insert(0, f'{vals[j]:.4f}' if j < len(vals) else '0.0')
-            self.get_logger().info('标定参数已加载')
-
-    def _load_calib_from_config(self):
-        """从配置文件加载标定参数"""
-        import os
-        import yaml
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            pkg_share = get_package_share_directory('triarm_control')
-            config_path = os.path.join(pkg_share, 'config', 'triarm_config.yaml')
-        except Exception:
-            # fallback: 开发模式下直接用相对路径
-            config_path = os.path.join(
-                os.path.dirname(__file__), '..', 'config', 'triarm_config.yaml')
-        try:
-            with open(config_path, 'r') as f:
-                cfg = yaml.safe_load(f)
-            params = cfg.get('unified_arm_node', {}).get('ros__parameters', {})
-            for arm in ['arm_a', 'arm_b', 'arm_s']:
-                vals = params.get(f'pose_P_{arm}', [0.0]*6)
-                for j, e in enumerate(self.calib_entries[arm]):
-                    e.delete(0, tk.END)
-                    e.insert(0, f'{vals[j]:.4f}' if j < len(vals) else '0.0')
-            self.get_logger().info(f'从配置文件加载标定参数: {config_path}')
-        except Exception as e:
-            self.get_logger().warn(f'加载配置文件失败: {e}')
-
-    def _apply_calib_params(self):
-        """应用标定参数到unified_arm_node"""
-        from rcl_interfaces.srv import SetParameters
-        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
-        client = self.create_client(SetParameters, '/unified_arm_node/set_parameters')
-        if not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('unified_arm_node参数服务不可用')
-            return
-        params = []
-        for arm in ['arm_a', 'arm_b', 'arm_s']:
-            vals = [float(e.get()) for e in self.calib_entries[arm]]
-            params.append(Parameter(
-                name=f'pose_P_{arm}',
-                value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE_ARRAY, double_array_value=vals)))
-        request = SetParameters.Request(parameters=params)
-        future = client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-        self.get_logger().info('标定参数已应用')
 
     def _send_world_pose(self, mode: str):
         """发送世界坐标系位姿命令"""
@@ -627,8 +531,11 @@ class JointControlGUI(Node):
         """
         algo = self._algos.get(arm, self._algo)
 
-        # 从标定参数获取变换 (平台到臂基座, m+rad)
-        pose_P_Bi = [float(e.get()) for e in self.calib_entries[arm]]
+        # 从ROS参数获取base变换 (平台到臂基座)
+        base_pos = list(self.get_parameter(f'{arm}.base_position').value)
+        base_ori_deg = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
+        base_ori_rad = [math.radians(d) for d in base_ori_deg]
+        pose_P_Bi = base_pos + base_ori_rad
 
         # 获取当前D1角度 (URDF中D1轴为负Z，需取反)
         d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
