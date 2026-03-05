@@ -18,7 +18,10 @@ try:
 except ImportError:
     HAS_TK = False
 
+from rm_ros_interfaces.msg import Movel, Movejp
+from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
+from .realman_sdk_wrapper import RealManAlgo
 
 
 class JointControlGUI(Node):
@@ -31,6 +34,14 @@ class JointControlGUI(Node):
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 600)
+
+        # per-arm base 参数 (与 unified_arm_node 一致, 用于 RM65Robot IK/FK)
+        self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
+        self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
+        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
+        self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
+        self.declare_parameter('arm_b.d6_mm', 172.5)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
@@ -68,10 +79,42 @@ class JointControlGUI(Node):
         # 发布夹爪控制指令
         self.gripper_pub = self.create_publisher(String, f'{prefix}gripper_control', 10)
 
+        # 发布 MoveL/MoveJP/MoveP 命令
+        self.movel_pubs = {
+            'arm_a': self.create_publisher(Movel, 'arm_a/rm_driver/movel_cmd', 10),
+            'arm_b': self.create_publisher(Movel, 'arm_b/rm_driver/movel_cmd', 10),
+        }
+        self.movejp_pubs = {
+            'arm_a': self.create_publisher(Movejp, 'arm_a/rm_driver/movej_p_cmd', 10),
+            'arm_b': self.create_publisher(Movejp, 'arm_b/rm_driver/movej_p_cmd', 10),
+        }
+        self.movep_pubs = {
+            'arm_a': self.create_publisher(Movel, 'arm_a/rm_driver/movep_cmd', 10),
+            'arm_b': self.create_publisher(Movel, 'arm_b/rm_driver/movep_cmd', 10),
+        }
+
+        # 订阅运动结果
+        for arm in ['arm_a', 'arm_b']:
+            self.create_subscription(Bool, f'{arm}/rm_driver/movel_result', self._on_move_result, 10)
+            self.create_subscription(Bool, f'{arm}/rm_driver/movej_p_result', self._on_move_result, 10)
+            self.create_subscription(Bool, f'{arm}/rm_driver/movep_result', self._on_move_result, 10)
+
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
         self.has_state = False
+
+        # per-arm 算法库 (带各自 base 参数, 与 unified_arm_node 保持一致)
+        self._algos = {}
+        for arm in ['arm_a', 'arm_b']:
+            bp = list(self.get_parameter(f'{arm}.base_position').value)
+            bo = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
+            d6 = self.get_parameter(f'{arm}.d6_mm').value
+            algo = RealManAlgo(base_position=bp, base_orientation_deg=bo, d6_mm=d6)
+            algo.initialize()
+            self._algos[arm] = algo
+        # 默认引用 (向后兼容其他使用 pos2matrix/matrix2pos 的地方)
+        self._algo = self._algos['arm_a']
 
         # GUI组件
         self.entries = []
@@ -96,6 +139,7 @@ class JointControlGUI(Node):
         self._create_arm_tab(notebook, 'B', 7)
         self._create_arm_tab(notebook, 'S', 13)
         self._create_gripper_tab(notebook)
+        self._create_world_pose_tab(notebook)
 
         # 按钮区域
         self._create_buttons()
@@ -206,6 +250,48 @@ class JointControlGUI(Node):
         ttk.Button(quick_frame, text='右夹爪闭合',
                    command=lambda: self._set_gripper('right', r_close)).pack(side='left', padx=5)
 
+
+    def _create_world_pose_tab(self, notebook):
+        """创建世界坐标位姿输入标签页"""
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text='世界坐标')
+
+        # 臂选择
+        ttk.Label(frame, text='目标臂:').grid(row=0, column=0, padx=5, pady=10)
+        self.target_arm_var = tk.StringVar(value='arm_a')
+        ttk.Radiobutton(frame, text='A臂', variable=self.target_arm_var, value='arm_a').grid(row=0, column=1)
+        ttk.Radiobutton(frame, text='B臂', variable=self.target_arm_var, value='arm_b').grid(row=0, column=2)
+
+        # 位姿输入
+        labels = ['x(m)', 'y(m)', 'z(m)', 'rx(rad)', 'ry(rad)', 'rz(rad)']
+        defaults = ['0.3', '0.0', '0.4', '0.0', '3.14', '0.0']
+        self.world_pose_entries = []
+        for col, (lbl, val) in enumerate(zip(labels, defaults)):
+            ttk.Label(frame, text=lbl).grid(row=1, column=col, padx=5, pady=5)
+            e = ttk.Entry(frame, width=10)
+            e.insert(0, val)
+            e.grid(row=2, column=col, padx=5)
+            self.world_pose_entries.append(e)
+
+        # 速度
+        ttk.Label(frame, text='速度:').grid(row=3, column=0, pady=10)
+        self.move_speed_entry = ttk.Entry(frame, width=6)
+        self.move_speed_entry.insert(0, '20')
+        self.move_speed_entry.grid(row=3, column=1)
+
+        # 按钮
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
+        ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='MoveP', command=lambda: self._send_world_pose('movep')).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
+        ttk.Button(btn_frame, text='直接执行(基座系)', command=self._send_base_pose).pack(side='left', padx=10)
+
+        # 状态标签
+        self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
+        self.world_pose_status.grid(row=5, column=0, columnspan=6, pady=10)
+
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
 
@@ -303,6 +389,7 @@ class JointControlGUI(Node):
                     idx = JOINT_NAMES_LIST.index(name)
                     self.cmd_positions[idx] = msg.position[i]
             self._update_cmd_labels()
+            self._sync_sliders_to_cmd()
 
     def _update_realtime_labels(self):
         for idx, label in self.realtime_labels:
@@ -311,6 +398,11 @@ class JointControlGUI(Node):
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:
             label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
+
+    def _sync_sliders_to_cmd(self):
+        """将滑块和输入框同步到当前指令值"""
+        for idx, var, _, _ in self.sliders:
+            var.set(round(math.degrees(self.cmd_positions[idx]), 1))
 
     def _send_target(self):
         if not self.has_state:
@@ -337,6 +429,159 @@ class JointControlGUI(Node):
             entry.insert(0, '0.0')
         for idx, var, _, _ in self.sliders:
             var.set(0.0)
+
+
+    def _send_world_pose(self, mode: str):
+        """发送世界坐标系位姿命令"""
+        try:
+            vals = [float(e.get()) for e in self.world_pose_entries]
+            speed = int(self.move_speed_entry.get())
+        except ValueError:
+            self.get_logger().error('位姿或速度输入无效')
+            return
+        arm = self.target_arm_var.get()
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = vals[0], vals[1], vals[2]
+        # 欧拉角转四元数
+        import transforms3d.euler as txe
+        import transforms3d.quaternions as txq
+        R = txe.euler2mat(vals[3], vals[4], vals[5], 'sxyz')
+        q = txq.mat2quat(R)
+        pose.orientation.w, pose.orientation.x = float(q[0]), float(q[1])
+        pose.orientation.y, pose.orientation.z = float(q[2]), float(q[3])
+
+        if mode == 'movel':
+            msg = Movel(pose=pose, speed=speed)
+            self.movel_pubs[arm].publish(msg)
+        elif mode == 'movejp':
+            msg = Movejp(pose=pose, speed=speed)
+            self.movejp_pubs[arm].publish(msg)
+        else:  # movep
+            msg = Movel(pose=pose, speed=speed)
+            self.movep_pubs[arm].publish(msg)
+        self.world_pose_status.config(text='执行中...', foreground='orange')
+        self._last_target_pose = vals  # 记录目标位姿
+        self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
+
+    def _on_move_result(self, msg: Bool):
+        """处理运动结果"""
+        if msg.data:
+            self.world_pose_status.config(text='执行成功', foreground='green')
+        else:
+            vals = getattr(self, '_last_target_pose', [0]*6)
+            self.world_pose_status.config(
+                text=f'求解失败 xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] rpy=[{vals[3]:.2f},{vals[4]:.2f},{vals[5]:.2f}]',
+                foreground='red')
+
+    def _gen_random_reachable(self):
+        """随机生成可达点 (通过FK) → 世界坐标系位姿
+
+        使用 per-arm algo (带正确 base 参数 + D1 转盘角度),
+        FK 直接输出世界坐标系位姿, 与 unified_arm_node 的 IK 变换链一致。
+        """
+        import random
+
+        arm = self.target_arm_var.get()
+        algo = self._algos.get(arm)
+        if not algo or not algo.is_ready:
+            self.world_pose_status.config(text='Algo未就绪', foreground='red')
+            return
+
+        # 设置 D1 转盘角度 (与 unified_arm_node.world_pose_to_joints 一致: 取反)
+        d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
+        algo._robot.set_turntable_angle(-d1_deg)
+
+        # 随机关节角度
+        arm_prefix = 'A' if arm == 'arm_a' else 'B'
+        arm_joints = [f'joint_platform_{arm_prefix}{i}' for i in range(1, 7)]
+        joints_deg = []
+        for name in arm_joints:
+            lo, hi = JOINT_LIMITS[name]
+            joints_deg.append(random.uniform(math.degrees(lo), math.degrees(hi)))
+
+        # FK → 世界坐标系位姿 (RM65Robot 内部已处理 turntable + base 变换)
+        pose_fk = algo.forward_kinematics(joints_deg, 1)
+        if pose_fk is None:
+            self.world_pose_status.config(text='FK失败', foreground='red')
+            return
+        self.get_logger().info(
+            f'FK世界位姿(m): [{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}]')
+
+        # IK 验证 (用同一个 per-arm algo, 与 unified_arm_node 保持一致)
+        ik_result = algo.inverse_kinematics(joints_deg, pose_fk, 1)
+        ik_ok = ik_result is not None
+        self.get_logger().info(f'IK验证: {"成功" if ik_ok else "失败"}')
+
+        # 填入 GUI
+        for i, e in enumerate(self.world_pose_entries):
+            e.delete(0, tk.END)
+            e.insert(0, f'{pose_fk[i]:.4f}')
+
+        self.get_logger().info(f'随机关节: {[f"{d:.1f}" for d in joints_deg]}')
+        status = '已生成' if ik_ok else '已生成(IK可能失败)'
+        self.world_pose_status.config(
+            text=status, foreground='green' if ik_ok else 'orange')
+
+    def _base_to_world(self, arm: str, pose_Bi_T: list):
+        """臂基座系位姿 → 世界坐标系位姿
+        Args:
+            pose_Bi_T: [x,y,z,rx,ry,rz] m+rad (臂基座系)
+        Returns:
+            [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
+        """
+        algo = self._algos.get(arm, self._algo)
+
+        # 从ROS参数获取base变换 (平台到臂基座)
+        base_pos = list(self.get_parameter(f'{arm}.base_position').value)
+        base_ori_deg = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
+        base_ori_rad = [math.radians(d) for d in base_ori_deg]
+        pose_P_Bi = base_pos + base_ori_rad
+
+        # 获取当前D1角度 (URDF中D1轴为负Z，需取反)
+        d1_deg = math.degrees(self.current_positions[0]) if self.has_state else 0.0
+        d1_rad = math.radians(-d1_deg)
+
+        # pos2matrix (通过RealManAlgo封装)
+        T_W_P = algo.pos2matrix([0, 0, 0, 0, 0, d1_rad])
+        T_P_Bi = algo.pos2matrix(pose_P_Bi)
+        T_Bi_T = algo.pos2matrix(pose_Bi_T)
+
+        if T_W_P is None or T_P_Bi is None or T_Bi_T is None:
+            self.get_logger().error(f'pos2matrix失败')
+            return None
+
+        # T_W_T = T_W_P @ T_P_Bi @ T_Bi_T
+        T_W_Bi = T_W_P @ T_P_Bi
+        T_W_T = T_W_Bi @ T_Bi_T
+
+        # matrix2pos (通过RealManAlgo封装)
+        pose_W_T = algo.matrix2pos(T_W_T, 1)
+        if pose_W_T is None:
+            self.get_logger().error(f'matrix2pos失败')
+            return None
+
+        return list(pose_W_T)
+
+    def _send_base_pose(self):
+        """直接发送臂基座坐标系位姿 (跳过世界坐标变换)"""
+        try:
+            vals = [float(e.get()) for e in self.world_pose_entries]
+            speed = int(self.move_speed_entry.get())
+        except ValueError:
+            self.world_pose_status.config(text='输入无效', foreground='red')
+            return
+        arm = self.target_arm_var.get()
+        # 直接用SDK的movej_p，不经过坐标变换
+        from std_msgs.msg import Float64MultiArray
+        # 发布到专用话题，让unified_arm_node直接执行IK
+        if not hasattr(self, 'base_pose_pub'):
+            self.base_pose_pub = self.create_publisher(
+                Float64MultiArray, f'{arm}/base_pose_cmd', 10)
+        msg = Float64MultiArray()
+        msg.data = vals + [float(speed)]
+        self.base_pose_pub.publish(msg)
+        self.world_pose_status.config(text='已发送(基座系)', foreground='orange')
+        self._last_target_pose = vals
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""
