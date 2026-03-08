@@ -401,8 +401,10 @@ class JointControlGUI(Node):
             label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
 
     def _sync_sliders_to_cmd(self):
-        """将滑块和输入框同步到当前指令值"""
+        """将滑块和输入框同步到当前指令值 (仅同步机械臂关节, 跳过夹爪 index 19-22)"""
         for idx, var, _, _ in self.sliders:
+            if idx >= 19:
+                continue
             var.set(round(math.degrees(self.cmd_positions[idx]), 1))
 
     def _send_target(self):
