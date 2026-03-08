@@ -545,8 +545,8 @@ class UnifiedArmNode(Node):
         self.declare_parameter('sim_motion_timeout', 10.0)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
-        self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
-        self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
+        self.declare_parameter('arm_a.base_position', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_a.base_orientation_deg', [0.0, 0.0, 0.0])
         self.declare_parameter('arm_a.d6_mm', 172.5)
         self.declare_parameter('arm_b.base_position', [0.0, 0.0, 0.0])
         self.declare_parameter('arm_b.base_orientation_deg', [0.0, 0.0, 0.0])
