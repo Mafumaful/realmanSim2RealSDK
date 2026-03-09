@@ -292,6 +292,19 @@ class JointControlGUI(Node):
         self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
         self.world_pose_status.grid(row=5, column=0, columnspan=6, pady=10)
 
+        # 当前位姿显示（base = IK/FK控制坐标系, World = Isaac Sim坐标系）
+        current_frame = ttk.LabelFrame(frame, text='当前位姿', padding=10)
+        current_frame.grid(row=6, column=0, columnspan=6, pady=10, padx=10, sticky='ew')
+
+        self.current_pose_label = ttk.Label(
+            current_frame,
+            text='base:  X=-, Y=-, Z=- | RX=-, RY=-, RZ=- \n'
+                 'World: X=-, Y=-, Z=- | RX=-, RY=-, RZ=- ',
+            font=('Courier', 10),
+            justify='left'
+        )
+        self.current_pose_label.pack()
+
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
 
@@ -381,6 +394,7 @@ class JointControlGUI(Node):
                     self.current_positions[idx] = msg.position[i]
             self.has_state = True
             self._update_realtime_labels()
+            self._update_current_pose_display()
 
     def _cmd_callback(self, msg: JointState):
         if msg.name and msg.position:
@@ -394,6 +408,115 @@ class JointControlGUI(Node):
     def _update_realtime_labels(self):
         for idx, label in self.realtime_labels:
             label.config(text=f'{math.degrees(self.current_positions[idx]):.1f}°')
+
+    def _update_current_pose_display(self):
+        """更新当前位姿显示（base_link + Isaac Sim World）"""
+        try:
+            if not self.has_state:
+                return
+
+            arm = self.target_arm_var.get()
+            algo = self._algos.get(arm)
+            if not algo or not algo.is_ready:
+                return
+
+            # 提取当前臂的关节角度
+            arm_prefix = 'A' if arm == 'arm_a' else 'B'
+            joints_deg = []
+            for i in range(1, 7):
+                idx = JOINT_NAMES_LIST.index(f'joint_platform_{arm_prefix}{i}')
+                joints_deg.append(math.degrees(self.current_positions[idx]))
+
+            # 设置 D1 角度
+            d1_deg = math.degrees(self.current_positions[0])
+            algo._robot.set_turntable_angle(-d1_deg)
+
+            # FK 计算 — RM65Robot 世界坐标系（用于 IK 控制）
+            result = algo.forward_kinematics(joints_deg, 1)
+            if result:
+                pos = result[:3]
+                ori_rad = result[3:]
+                ori_deg = [math.degrees(r) for r in ori_rad]
+
+                # 计算 Isaac Sim World 坐标（使用 URDF 变换链）
+                import numpy as np
+                wx, wy, wz, wo_deg = self._calc_isaac_world_pose(
+                    arm, joints_deg, d1_deg)
+
+                text = (f'base:  X={pos[0]:.4f}, Y={pos[1]:.4f}, Z={pos[2]:.4f} (m) '
+                       f'| RX={ori_deg[0]:.1f}, RY={ori_deg[1]:.1f}, RZ={ori_deg[2]:.1f} (°) \n'
+                       f'World: X={wx:.4f}, Y={wy:.4f}, Z={wz:.4f} (m) '
+                       f'| RX={wo_deg[0]:.1f}, RY={wo_deg[1]:.1f}, RZ={wo_deg[2]:.1f} (°)')
+
+                self.current_pose_label.config(text=text)
+        except Exception as e:
+            self.get_logger().error(f'更新位姿显示失败: {e}')
+
+    def _calc_isaac_world_pose(self, arm, joints_deg, d1_deg):
+        """使用 URDF 变换链计算 Isaac Sim World 坐标"""
+        import numpy as np
+
+        def _Rx(a):
+            c, s = math.cos(a), math.sin(a)
+            return np.array([[1,0,0],[0,c,-s],[0,s,c]])
+        def _Ry(a):
+            c, s = math.cos(a), math.sin(a)
+            return np.array([[c,0,s],[0,1,0],[-s,0,c]])
+        def _Rz(a):
+            c, s = math.cos(a), math.sin(a)
+            return np.array([[c,-s,0],[s,c,0],[0,0,1]])
+
+        def _T(rpy, xyz):
+            T = np.eye(4)
+            T[0:3, 0:3] = _Rz(rpy[2]) @ _Ry(rpy[1]) @ _Rx(rpy[0])
+            T[0:3, 3] = xyz
+            return T
+
+        def _Tj(angle_rad, axis_sign=1):
+            T = np.eye(4)
+            T[0:3, 0:3] = _Rz(axis_sign * angle_rad)
+            return T
+
+        jr = [math.radians(d) for d in joints_deg]
+        d1_rad = math.radians(d1_deg)
+
+        if arm == 'arm_a':
+            T_A0 = _T([0.7854, -1.5708, 0], [-0.04867, -0.053739, 0.2273])
+            T_J1_origin = _T([3.1416, 0, 0], [0, 0, 0.2405])
+            a1_sign = -1  # A1 axis = "0 0 -1"
+        else:
+            T_A0 = _T([2.3562, -1.5708, 0], [0.054575, -0.04863, 0.2273])
+            T_J1_origin = _T([3.1416, 0, 0], [0, 0, 0.2405])
+            a1_sign = -1  # B1 axis 也需要检查
+
+        # D1
+        T_D1 = _T([0, 0, 3.1416], [0, 0, 0]) @ _Tj(d1_rad)
+
+        # 关节 1-6
+        T = (T_D1 @ T_A0 @
+             T_J1_origin @ _Tj(jr[0], a1_sign) @
+             _T([1.5707963267949, 1.5707963267949, 0], [0, 0, 0]) @ _Tj(jr[1]) @
+             _T([0, 0, 1.57079632679477], [0.256, 0, 0]) @ _Tj(jr[2]) @
+             _T([1.5707963267949, 0, 0], [0, -0.21, -0.0003]) @ _Tj(jr[3]) @
+             _T([-1.5707963267949, 0, 0], [0, 0, 0]) @ _Tj(jr[4]) @
+             _T([1.5707963267949, 0, 0], [0, -0.1725, -0.0003]) @ _Tj(jr[5]))
+
+        pos = T[0:3, 3]
+        # Isaac Sim 的实际坐标需要额外 Rz(-pi/2) 修正
+        # (URDF rpy 约定与 Isaac Sim 内部表示的差异)
+        c90, s90 = math.cos(-math.pi/2), math.sin(-math.pi/2)
+        Rz_corr = np.array([[c90, -s90, 0, 0], [s90, c90, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        T = Rz_corr @ T
+
+        pos = T[0:3, 3]
+        # 提取欧拉角 (ZYX)
+        R = T[0:3, 0:3]
+        ry = math.asin(-R[2, 0]) if abs(R[2, 0]) < 1 else math.copysign(math.pi/2, -R[2, 0])
+        rx = math.atan2(R[2, 1], R[2, 2])
+        rz = math.atan2(R[1, 0], R[0, 0])
+        ori_deg = [math.degrees(rx), math.degrees(ry), math.degrees(rz)]
+
+        return pos[0], pos[1], pos[2], ori_deg
 
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:

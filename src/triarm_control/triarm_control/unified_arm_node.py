@@ -58,18 +58,18 @@ ARM_DEFAULTS = {
 }
 
 # ═══════════════════════════════════════════════════════════
-# 臂基座配置 (基于 URDF joint_platform_A1/B1 标定)
-# 用于世界坐标 → 臂基座坐标变换
+# 臂基座配置 (废弃 - 仅供参考，实际使用配置文件中的参数)
+# 真实参数在 triarm_config.yaml 中定义
 # ═══════════════════════════════════════════════════════════
 ARM_BASE_MAP = {
     'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
     'arm_a': {
-        'offset': np.array([0.15605, 0.14202, 0.17264]),
-        'euler_xyz_deg': (-90.0, 47.366, 65.398),
+        'offset': np.array([0.05457, -0.04863, 0.2273]),
+        'euler_xyz_deg': (45.0, 90.0, 0.0),
     },
     'arm_b': {
-        'offset': np.array([-0.14289, 0.15524, 0.17264]),
-        'euler_xyz_deg': (-90.0, -42.628, 0.002),
+        'offset': np.array([-0.04867, -0.05374, 0.2273]),
+        'euler_xyz_deg': (135.0, 90.0, 0.0),
     },
 }
 
@@ -232,6 +232,83 @@ class ArmBridge:
         if self.mode == 'real':
             self._sdk.stop()
 
+    def _on_base_pose(self, msg: Float64MultiArray):
+        """基座坐标系位姿命令 (跳过世界坐标变换)"""
+        threading.Thread(target=self._exec_base_pose, args=(msg.data,), daemon=True).start()
+
+    def _exec_base_pose(self, data):
+        """执行基座坐标系位姿"""
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = data[:6]
+            success = self._sim_move_to_pose_base(x, y, z, rx, ry, rz)
+        result = Bool()
+        result.data = success
+        self._movejp_result_pub.publish(result)
+
+    # ─── 坐标变换 ───
+    # SDK单位约定: 位置 m, 姿态 rad (来自 rm_pose_t 定义)
+
+    def world_pose_to_joints(self, x, y, z, rx, ry, rz) -> Optional[List[float]]:
+        """世界坐标系位姿 → 臂关节角度 (弧度)
+
+        输入: x,y,z (m), rx,ry,rz (rad)
+
+        注意: RM65Robot 内部已处理坐标变换 (世界系 → 臂base系)，
+        只需设置 D1 角度并调用 IK 即可。
+        """
+        algo = self._sdk._algo
+        if not algo.is_ready:
+            self.logger.warn(f'{self._tag} Algo未就绪')
+            return None
+
+        # 获取D1角度并设置到 RM65Robot
+        # URDF中D1轴为负Z，Isaac Sim返回的角度需取反
+        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+        self.logger.info(f'{self._tag} D1角度={d1_deg:.1f}°')
+
+        # 设置转盘角度 (注意取反)
+        turntable_angle = -d1_deg
+        algo._robot.set_turntable_angle(turntable_angle)
+        self.logger.info(f'{self._tag} 设置转盘角度={turntable_angle:.1f}°')
+
+        # 直接调用 RM65Robot IK (输入世界坐标系位姿)
+        target_position = [x, y, z]
+        target_orientation_deg = [math.degrees(rx), math.degrees(ry), math.degrees(rz)]
+
+        with self._lock:
+            q_ref = list(self._current_joints)
+        q_ref_deg = [math.degrees(q) for q in q_ref]
+
+        self.logger.info(f'{self._tag} 世界输入: pos=[{x:.4f},{y:.4f},{z:.4f}]m, ori=[{target_orientation_deg[0]:.2f},{target_orientation_deg[1]:.2f},{target_orientation_deg[2]:.2f}]°')
+        self.logger.info(f'{self._tag} 参考关节角度: {[f"{q:.2f}" for q in q_ref_deg]}°')
+
+        # 调用 RM65Robot IK (内部已处理坐标变换)
+        result = algo._robot.inverse_kinematics(
+            target_position=target_position,
+            target_orientation_deg=target_orientation_deg,
+            current_joint_angles_deg=q_ref_deg
+        )
+
+        if not result or not result.get('success'):
+            self.logger.warn(f'{self._tag} IK失败')
+            return None
+
+        joints_deg = result['joint_angles_deg']
+        self.logger.info(f'{self._tag} IK输出关节角度: {[f"{j:.2f}" for j in joints_deg]}°')
+
+        # FK验证
+        fk_result = algo._robot.forward_kinematics(joints_deg)
+        if fk_result:
+            fk_pos = fk_result['position']
+            fk_ori = fk_result['euler_deg']
+            pos_err = [abs(t-f) for t, f in zip(target_position, fk_pos)]
+            ori_err = [abs(t-f) for t, f in zip(target_orientation_deg, fk_ori)]
+            self.logger.info(f'{self._tag} FK验证: pos=[{fk_pos[0]:.4f},{fk_pos[1]:.4f},{fk_pos[2]:.4f}]m, ori=[{fk_ori[0]:.2f},{fk_ori[1]:.2f},{fk_ori[2]:.2f}]°')
+            self.logger.info(f'{self._tag} FK误差: pos_err=[{pos_err[0]*1000:.2f},{pos_err[1]*1000:.2f},{pos_err[2]*1000:.2f}]mm, ori_err=[{ori_err[0]:.2f},{ori_err[1]:.2f},{ori_err[2]:.2f}]°')
+
+        return [math.radians(d) for d in joints_deg]
+
     # ─── 执行逻辑 ───
 
     def _exec_movel(self, msg: Movel):
@@ -386,6 +463,11 @@ class ArmBridge:
                     self._current_pose = pose
 
         elif self.mode == 'sim' and self._sdk.is_ready:
+            # FK 前同步转盘角度，确保与 IK 一致
+            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+            algo = self._sdk._algo
+            if algo.is_ready:
+                algo._robot.set_turntable_angle(-d1_deg)
             with self._lock:
                 joints_copy = list(self._current_joints)
             pose_dict = self._sdk.forward_kinematics(joints_copy)
