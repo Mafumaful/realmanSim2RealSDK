@@ -282,6 +282,7 @@ class JointControlGUI(Node):
         # 按钮
         btn_frame = ttk.Frame(frame)
         btn_frame.grid(row=4, column=0, columnspan=6, pady=15)
+        ttk.Button(btn_frame, text='读取当前位姿', command=self._read_current_pose).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveL', command=lambda: self._send_world_pose('movel')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveP', command=lambda: self._send_world_pose('movep')).pack(side='left', padx=10)
@@ -400,8 +401,10 @@ class JointControlGUI(Node):
             label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
 
     def _sync_sliders_to_cmd(self):
-        """将滑块和输入框同步到当前指令值"""
+        """将滑块和输入框同步到当前指令值 (仅同步机械臂关节, 跳过夹爪 index 19-22)"""
         for idx, var, _, _ in self.sliders:
+            if idx >= 19:
+                continue
             var.set(round(math.degrees(self.cmd_positions[idx]), 1))
 
     def _send_target(self):
@@ -472,6 +475,44 @@ class JointControlGUI(Node):
             self.world_pose_status.config(
                 text=f'求解失败 xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] rpy=[{vals[3]:.2f},{vals[4]:.2f},{vals[5]:.2f}]',
                 foreground='red')
+
+    def _read_current_pose(self):
+        """从当前关节状态做正解，将世界坐标系位姿填入输入框"""
+        if not self.has_state:
+            self.world_pose_status.config(text='等待关节状态...', foreground='red')
+            return
+
+        arm = self.target_arm_var.get()
+        algo = self._algos.get(arm)
+        if not algo or not algo.is_ready:
+            self.world_pose_status.config(text='Algo未就绪', foreground='red')
+            return
+
+        # 臂关节索引映射
+        arm_joint_indices = {'arm_a': list(range(1, 7)), 'arm_b': list(range(7, 13))}
+        indices = arm_joint_indices.get(arm, [])
+        joints_deg = [math.degrees(self.current_positions[i]) for i in indices]
+
+        # 设置 D1 转盘角度 (与 unified_arm_node 一致: 取反)
+        d1_deg = math.degrees(self.current_positions[0])
+        algo._robot.set_turntable_angle(-d1_deg)
+
+        # FK → 世界坐标系位姿
+        pose_fk = algo.forward_kinematics(joints_deg, 1)
+        if pose_fk is None:
+            self.world_pose_status.config(text='正解失败', foreground='red')
+            return
+
+        for i, e in enumerate(self.world_pose_entries):
+            e.delete(0, tk.END)
+            e.insert(0, f'{pose_fk[i]:.4f}')
+
+        self.world_pose_status.config(
+            text=f'已读取 {arm} 当前位姿 (D1={d1_deg:.1f}°)',
+            foreground='green')
+        self.get_logger().info(
+            f'读取{arm}当前位姿: xyz=[{pose_fk[0]:.4f},{pose_fk[1]:.4f},{pose_fk[2]:.4f}] '
+            f'rpy=[{pose_fk[3]:.4f},{pose_fk[4]:.4f},{pose_fk[5]:.4f}]')
 
     def _gen_random_reachable(self):
         """随机生成可达点 (通过FK) → 世界坐标系位姿
@@ -667,6 +708,7 @@ class JointControlGUI(Node):
     def _load_gripper_params_from_controller(self):
         """从controller节点获取夹爪参数"""
         from rcl_interfaces.srv import GetParameters
+        import time
 
         # 默认值
         self.left_open_angle = 0.0
@@ -680,18 +722,28 @@ class JointControlGUI(Node):
                 self.get_logger().warn('controller参数服务不可用，使用默认夹爪参数')
                 return
 
+            # 先获取 mode 参数，决定用 sim_ 还是 real_ 前缀
+            req_mode = GetParameters.Request()
+            req_mode.names = ['mode']
+            fut_mode = client.call_async(req_mode)
+            start = time.time()
+            while not fut_mode.done() and (time.time() - start) < 2.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+
+            mode_prefix = 'sim'
+            if fut_mode.done() and fut_mode.result().values:
+                mode_val = fut_mode.result().values[0].string_value
+                mode_prefix = 'sim' if mode_val == 'sim' else 'real'
+
+            # 用正确的 sim/real 前缀请求夹爪参数
             request = GetParameters.Request()
             request.names = [
-                'left_gripper.open_angle',
-                'left_gripper.close_angle',
-                'right_gripper.open_angle',
-                'right_gripper.close_angle'
+                f'left_gripper.{mode_prefix}_open_angle',
+                f'left_gripper.{mode_prefix}_close_angle',
+                f'right_gripper.{mode_prefix}_open_angle',
+                f'right_gripper.{mode_prefix}_close_angle',
             ]
-
             future = client.call_async(request)
-
-            # 等待结果
-            import time
             start = time.time()
             while not future.done() and (time.time() - start) < 2.0:
                 rclpy.spin_once(self, timeout_sec=0.01)
@@ -703,62 +755,78 @@ class JointControlGUI(Node):
                     self.left_close_angle = response.values[1].double_value
                     self.right_open_angle = response.values[2].double_value
                     self.right_close_angle = response.values[3].double_value
-                    self.get_logger().info(f'从controller加载夹爪参数: 左={self.left_close_angle}°, 右={self.right_close_angle}°')
+                    self.get_logger().info(
+                        f'从controller加载夹爪参数({mode_prefix}): '
+                        f'左开={self.left_open_angle}° 左闭={self.left_close_angle}°, '
+                        f'右开={self.right_open_angle}° 右闭={self.right_close_angle}°')
         except Exception as e:
             self.get_logger().warn(f'获取controller参数失败: {e}，使用默认值')
 
     def _update_gripper_params(self, side: str):
         """更新夹爪参数（热加载）"""
-        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.srv import SetParameters, GetParameters
         from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+        import time
 
         try:
+            client_set = self.create_client(SetParameters, '/triarm_controller/set_parameters')
+            client_get = self.create_client(GetParameters, '/triarm_controller/get_parameters')
+
+            if not client_get.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn('参数服务不可用')
+                return
+
+            # 获取 mode 以确定 sim/real 前缀
+            req_mode = GetParameters.Request()
+            req_mode.names = ['mode']
+            fut = client_get.call_async(req_mode)
+            start = time.time()
+            while not fut.done() and (time.time() - start) < 1.0:
+                rclpy.spin_once(self, timeout_sec=0.01)
+            mode_prefix = 'sim'
+            if fut.done() and fut.result().values:
+                mode_val = fut.result().values[0].string_value
+                mode_prefix = 'sim' if mode_val == 'sim' else 'real'
+
             if side == 'left':
                 open_angle = float(self.left_open_entry.get())
                 close_angle = float(self.left_close_entry.get())
-
                 params = [
                     Parameter(
-                        name='left_gripper.open_angle',
+                        name=f'left_gripper.{mode_prefix}_open_angle',
                         value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
                     ),
                     Parameter(
-                        name='left_gripper.close_angle',
+                        name=f'left_gripper.{mode_prefix}_close_angle',
                         value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
                     )
                 ]
-                self.get_logger().info(f'更新左夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
+                self.get_logger().info(f'更新左夹爪参数({mode_prefix}): 打开={open_angle}°, 闭合={close_angle}°')
 
             elif side == 'right':
                 open_angle = float(self.right_open_entry.get())
                 close_angle = float(self.right_close_entry.get())
-
                 params = [
                     Parameter(
-                        name='right_gripper.open_angle',
+                        name=f'right_gripper.{mode_prefix}_open_angle',
                         value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=open_angle)
                     ),
                     Parameter(
-                        name='right_gripper.close_angle',
+                        name=f'right_gripper.{mode_prefix}_close_angle',
                         value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=close_angle)
                     )
                 ]
-                self.get_logger().info(f'更新右夹爪参数: 打开={open_angle}°, 闭合={close_angle}°')
-
-            # 创建服务客户端
-            client = self.create_client(SetParameters, '/triarm_controller/set_parameters')
-
-            if not client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warn('参数服务不可用')
+                self.get_logger().info(f'更新右夹爪参数({mode_prefix}): 打开={open_angle}°, 闭合={close_angle}°')
+            else:
                 return
 
-            # 发送请求
+            if not client_set.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn('set_parameters服务不可用')
+                return
+
             request = SetParameters.Request()
             request.parameters = params
-            future = client.call_async(request)
-
-            # 简单等待结果
-            import time
+            future = client_set.call_async(request)
             start = time.time()
             while not future.done() and (time.time() - start) < 1.0:
                 rclpy.spin_once(self, timeout_sec=0.01)
