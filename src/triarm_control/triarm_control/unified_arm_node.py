@@ -26,7 +26,6 @@
 import math
 import time
 import threading
-from typing import List, Optional
 
 import numpy as np
 import rclpy
@@ -131,9 +130,7 @@ class ArmBridge:
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
                  sim_motion_timeout: float = 10.0,
-                 base_position: List[float] = None,
-                 base_orientation_deg: List[float] = None,
-                 d6_mm: float = 172.5):
+):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -143,26 +140,13 @@ class ArmBridge:
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
 
-        # Base 参数 (用于 RM65Robot)
-        self._base_position = base_position or [0.0, 0.0, 0.0]
-        self._base_orientation_deg = base_orientation_deg or [0.0, 0.0, 0.0]
-
         # SDK wrapper (模式感知，内部自动路由 sim/real)
-        # 传入 base 参数以初始化 RM65Robot
-        self._sdk = RealManSDKWrapper(
-            ip, port, arm_id, mode=mode,
-            base_position=base_position,
-            base_orientation_deg=base_orientation_deg,
-            d6_mm=d6_mm
-        )
+        self._sdk = RealManSDKWrapper(ip, port, arm_id, mode=mode)
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
         self._current_pose = Pose()
         self._lock = threading.Lock()
-
-        # D1角度回调 (由外部设置)
-        self._get_d1_angle = None
 
         # 运动命令串行化锁 (同一时刻只允许一个运动执行)
         self._motion_lock = threading.Lock()
@@ -180,8 +164,6 @@ class ArmBridge:
             Bool, f'{prefix}rm_driver/movej_result', 10)
         self._movejp_result_pub = node.create_publisher(
             Bool, f'{prefix}rm_driver/movej_p_result', 10)
-        self._movep_result_pub = node.create_publisher(
-            Bool, f'{prefix}rm_driver/movep_result', 10)
 
         # 状态反馈
         self._arm_pos_pub = node.create_publisher(
@@ -199,17 +181,9 @@ class ArmBridge:
         self._movejp_sub = node.create_subscription(
             Movejp, f'{prefix}rm_driver/movej_p_cmd',
             self._on_movejp, 10)
-        self._movep_sub = node.create_subscription(
-            Movel, f'{prefix}rm_driver/movep_cmd',
-            self._on_movep, 10)
         self._stop_sub = node.create_subscription(
             Empty, f'{prefix}rm_driver/move_stop_cmd',
             self._on_stop, 10)
-
-        # 基座坐标系位姿命令 (跳过世界坐标变换)
-        self._base_pose_sub = node.create_subscription(
-            Float64MultiArray, f'{prefix}base_pose_cmd',
-            self._on_base_pose, 10)
 
         # sim模式: 共享目标发布回调 (由外部设置)
         self._publish_shared_target = None
@@ -224,7 +198,7 @@ class ArmBridge:
         self._publish_shared_target = fn
 
     def set_d1_angle_fn(self, fn):
-        """设置D1角度获取回调 fn() → d1_angle_deg"""
+        """设置D1角度获取回调: fn() → float (度)"""
         self._get_d1_angle = fn
 
     def connect_sdk(self) -> bool:
@@ -252,77 +226,11 @@ class ArmBridge:
         threading.Thread(
             target=self._exec_movejp, args=(msg,), daemon=True).start()
 
-    def _on_movep(self, msg: Movel):
-        threading.Thread(
-            target=self._exec_movep, args=(msg,), daemon=True).start()
-
     def _on_stop(self, msg: Empty):
         self.logger.warn(f'{self._tag} 收到停止命令')
-        self._stop_event.set()
+        self._stop_event.set()  # 取消 sim 模式等待
         if self.mode == 'real':
             self._sdk.stop()
-
-    def _on_base_pose(self, msg: Float64MultiArray):
-        """基座坐标系位姿命令 (跳过世界坐标变换)"""
-        threading.Thread(target=self._exec_base_pose, args=(msg.data,), daemon=True).start()
-
-    def _exec_base_pose(self, data):
-        """执行基座坐标系位姿"""
-        with self._motion_lock:
-            self._stop_event.clear()
-            x, y, z, rx, ry, rz = data[:6]
-            success = self._sim_move_to_pose_base(x, y, z, rx, ry, rz)
-        result = Bool()
-        result.data = success
-        self._movejp_result_pub.publish(result)
-
-    # ─── 坐标变换 ───
-    # SDK单位约定: 位置 m, 姿态 rad (来自 rm_pose_t 定义)
-
-    def world_pose_to_joints(self, x, y, z, rx, ry, rz) -> Optional[List[float]]:
-        """世界坐标系位姿 → 臂关节角度 (弧度)
-
-        输入: x,y,z (m), rx,ry,rz (rad)
-
-        注意: RM65Robot 内部已处理坐标变换 (世界系 → 臂base系)，
-        只需设置 D1 角度并调用 IK 即可。
-        """
-        algo = self._sdk._algo
-        if not algo.is_ready:
-            self.logger.warn(f'{self._tag} Algo未就绪')
-            return None
-
-        # 获取D1角度并设置到 RM65Robot
-        # URDF中D1轴为负Z，Isaac Sim返回的角度需取反
-        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
-        self.logger.info(f'{self._tag} D1角度={d1_deg:.1f}°')
-
-        # 设置转盘角度 (注意取反)
-        algo._robot.set_turntable_angle(-d1_deg)
-
-        # 直接调用 RM65Robot IK (输入世界坐标系位姿)
-        target_position = [x, y, z]
-        target_orientation_deg = [math.degrees(rx), math.degrees(ry), math.degrees(rz)]
-
-        with self._lock:
-            q_ref = list(self._current_joints)
-        q_ref_deg = [math.degrees(q) for q in q_ref]
-
-        self.logger.info(f'{self._tag} 世界输入: [{x:.3f},{y:.3f},{z:.3f}]m')
-
-        # 调用 RM65Robot IK (内部已处理坐标变换)
-        result = algo._robot.inverse_kinematics(
-            target_position=target_position,
-            target_orientation_deg=target_orientation_deg,
-            current_joint_angles_deg=q_ref_deg
-        )
-
-        if not result or not result.get('success'):
-            self.logger.warn(f'{self._tag} IK失败')
-            return None
-
-        joints_deg = result['joint_angles_deg']
-        return [math.radians(d) for d in joints_deg]
 
     # ─── 执行逻辑 ───
 
@@ -365,19 +273,6 @@ class ArmBridge:
         result.data = success
         self._movejp_result_pub.publish(result)
 
-    def _exec_movep(self, msg: Movel):
-        with self._motion_lock:
-            self._stop_event.clear()
-            x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
-            speed = msg.speed
-            if self.mode == 'real':
-                success = self._real_movep(x, y, z, rx, ry, rz, speed)
-            else:
-                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
-        result = Bool()
-        result.data = success
-        self._movep_result_pub.publish(result)
-
     # ─── Real 模式 ───
 
     def _real_movel(self, x, y, z, rx, ry, rz, speed) -> bool:
@@ -392,37 +287,30 @@ class ArmBridge:
         ret = self._sdk.movej_p(x, y, z, rx, ry, rz, speed)
         return ret == SDKMotionResult.SUCCESS
 
-    def _real_movep(self, x, y, z, rx, ry, rz, speed) -> bool:
-        ret = self._sdk.movep(x, y, z, rx, ry, rz, speed)
-        return ret == SDKMotionResult.SUCCESS
-
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: 世界坐标系Pose → 坐标变换 → IK → 关节角度 → /target_joints"""
+        """sim模式: 臂基座Pose → SDK IK → 关节角度 → /target_joints"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
 
-        joints = self.world_pose_to_joints(x, y, z, rx, ry, rz)
+        self.logger.info(
+            f'{self._tag} '
+            f'臂基座=[{x:.4f},{y:.4f},{z:.4f}]')
+
+        with self._lock:
+            q_ref = list(self._current_joints)
+
+        joints = self._sdk.inverse_kinematics(
+            x, y, z, rx, ry, rz, q_ref=q_ref)
+
         if joints is None:
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
                 f'(臂基座=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
-        return self._sim_move_joints(joints)
-
-    def _sim_move_to_pose_base(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: 臂基座坐标系Pose → 直接IK → 关节角度"""
-        if not self._sdk.is_ready:
-            return False
-        with self._lock:
-            q_ref = list(self._current_joints)
-        joints = self._sdk.inverse_kinematics(x, y, z, rx, ry, rz, q_ref=q_ref)
-        if joints is None:
-            self.logger.warn(f'{self._tag} IK失败(基座系) [{x:.3f},{y:.3f},{z:.3f}]')
-            return False
         return self._sim_move_joints(joints)
 
     def _sim_move_joints(self, joints) -> bool:
@@ -543,18 +431,6 @@ class UnifiedArmNode(Node):
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.03)
         self.declare_parameter('sim_motion_timeout', 10.0)
-
-        # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
-        self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
-        self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 172.5)
-        self.declare_parameter('arm_b.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_b.base_orientation_deg', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 172.5)
-        self.declare_parameter('arm_s.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.base_orientation_deg', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.d6_mm', 172.5)
-
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
         rate = self.get_parameter('publish_rate').value
@@ -570,7 +446,6 @@ class UnifiedArmNode(Node):
         self._base_angle_pub = None
 
         # 共享23关节目标数组 (角度制, sim模式核心状态)
-        # 由 /joint_command 持续同步，确保与 controller_node 内部目标一致
         self._shared_target = [0.0] * TOTAL_JOINT_COUNT
         self._shared_target_lock = threading.Lock()
         self._d1_lock = threading.Lock()
@@ -594,12 +469,6 @@ class UnifiedArmNode(Node):
                 Float64MultiArray, f'{prefix}gripper_target',
                 self._on_gripper_target, 10)
 
-            # 订阅 /joint_command (controller_node 插值输出)
-            # 用于持续同步 _shared_target，确保与 controller_node 内部目标一致
-            self._cmd_sync_sub = self.create_subscription(
-                JointState, f'{prefix}joint_command',
-                self._on_cmd_sync, 10)
-
         # 创建 A/B 臂桥接器
         self._bridges = {}
         for arm_name in ['arm_a', 'arm_b']:
@@ -607,21 +476,13 @@ class UnifiedArmNode(Node):
             port = self.get_parameter(f'{arm_name}.port').value
             arm_id = arm_name[-1].upper()
 
-            # 获取 base 参数
-            base_position = list(self.get_parameter(f'{arm_name}.base_position').value)
-            base_orientation_deg = list(self.get_parameter(f'{arm_name}.base_orientation_deg').value)
-            d6_mm = self.get_parameter(f'{arm_name}.d6_mm').value
-
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
                 sim_joint_tol=self._sim_joint_tol,
-                sim_motion_timeout=self._sim_motion_timeout,
-                base_position=base_position,
-                base_orientation_deg=base_orientation_deg,
-                d6_mm=d6_mm)
+                sim_motion_timeout=self._sim_motion_timeout)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
-                bridge.set_d1_angle_fn(self._get_d1_angle)
+                bridge.set_d1_angle_fn(self._get_current_d1)
             bridge.connect_sdk()
             self._bridges[arm_name] = bridge
 
@@ -662,18 +523,7 @@ class UnifiedArmNode(Node):
 
     # ─── 共享目标管理 (sim模式) ───
 
-    def _on_cmd_sync(self, msg: JointState):
-        """从 controller_node 的 /joint_command 同步 _shared_target
-        确保 _shared_target 始终与 controller_node 内部目标一致，
-        避免 MoveP 发布时其他臂的值与 controller_node 不同步。
-        """
-        with self._shared_target_lock:
-            for i, name in enumerate(msg.name):
-                if i < len(msg.position) and name in JOINT_NAMES_LIST:
-                    idx = JOINT_NAMES_LIST.index(name)
-                    self._shared_target[idx] = math.degrees(msg.position[i])
-
-    def _get_d1_angle(self) -> float:
+    def _get_current_d1(self) -> float:
         """获取当前D1角度 (度)"""
         with self._d1_lock:
             return self._current_d1_angle
