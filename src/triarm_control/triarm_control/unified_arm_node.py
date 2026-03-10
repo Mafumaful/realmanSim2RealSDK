@@ -26,8 +26,8 @@
 import math
 import time
 import threading
+from typing import List, Optional
 
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
@@ -57,60 +57,6 @@ ARM_DEFAULTS = {
     'arm_s': {'ip': '192.168.1.20', 'port': 8080, 'id': 'S'},
 }
 
-# ═══════════════════════════════════════════════════════════
-# 臂基座配置 (废弃 - 仅供参考，实际使用配置文件中的参数)
-# 真实参数在 triarm_config.yaml 中定义
-# ═══════════════════════════════════════════════════════════
-ARM_BASE_MAP = {
-    'rotation_center': np.array([0.00043, 0.0004, -0.39995]),
-    'arm_a': {
-        'offset': np.array([0.05457, -0.04863, 0.2273]),
-        'euler_xyz_deg': (45.0, 90.0, 0.0),
-    },
-    'arm_b': {
-        'offset': np.array([-0.04867, -0.05374, 0.2273]),
-        'euler_xyz_deg': (135.0, 90.0, 0.0),
-    },
-}
-
-
-def _world_to_arm_base(x, y, z, rx, ry, rz, arm_key, d1_deg):
-    """世界坐标 → 臂基座坐标
-
-    Args:
-        x, y, z: 世界系位置 (米)
-        rx, ry, rz: 世界系姿态欧拉角 (弧度, sxyz)
-        arm_key: 'arm_a' 或 'arm_b'
-        d1_deg: D1 底盘当前角度 (度)
-
-    Returns:
-        (ax, ay, az, arx, ary, arz) 臂基座系下的位姿
-    """
-    cfg = ARM_BASE_MAP[arm_key]
-    center = ARM_BASE_MAP['rotation_center']
-
-    # 臂基座在世界系的位置
-    theta_d1 = np.radians(d1_deg)
-    c1, s1 = np.cos(theta_d1), np.sin(theta_d1)
-    R_d1 = np.array([[c1, -s1, 0], [s1, c1, 0], [0, 0, 1]])
-    arm_pos = center + R_d1 @ cfg['offset']
-
-    # Rx(ex) @ Ry(ey) @ Rz(ez + d1)
-    ex, ey, ez = [np.radians(a) for a in cfg['euler_xyz_deg']]
-    R_arm = txe.euler2mat(ex, ey, ez + np.radians(d1_deg), 'rxyz')
-
-    # 位置变换
-    delta = np.array([x, y, z]) - arm_pos
-    pos_arm = R_arm.T @ delta
-
-    # 姿态变换
-    R_target = txe.euler2mat(rx, ry, rz, 'sxyz')
-    R_in_arm = R_arm.T @ R_target
-    rot_arm = txe.mat2euler(R_in_arm, 'sxyz')
-
-    return (*pos_arm, *rot_arm)
-
-
 def pose_to_xyzrpy(pose: Pose):
     """将 geometry_msgs/Pose 转为 (x,y,z,rx,ry,rz) 欧拉角"""
     x = pose.position.x
@@ -130,7 +76,9 @@ class ArmBridge:
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
                  sim_motion_timeout: float = 10.0,
-):
+                 base_position: List[float] = None,
+                 base_orientation_deg: List[float] = None,
+                 d6_mm: float = 172.5):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -141,7 +89,11 @@ class ArmBridge:
         self._sim_motion_timeout = sim_motion_timeout
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
-        self._sdk = RealManSDKWrapper(ip, port, arm_id, mode=mode)
+        self._sdk = RealManSDKWrapper(
+            ip, port, arm_id, mode=mode,
+            base_position=base_position,
+            base_orientation_deg=base_orientation_deg,
+            d6_mm=d6_mm)
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
@@ -232,6 +184,46 @@ class ArmBridge:
         if self.mode == 'real':
             self._sdk.stop()
 
+    def world_pose_to_joints(
+        self, x, y, z, rx, ry, rz
+    ) -> Optional[List[float]]:
+        """世界坐标系位姿 → 关节角度 (弧度)。
+
+        base 安装位姿和 D1 转盘变换已经由 RM65Robot 内部处理，
+        这里不能再手动把世界坐标转一次臂基座坐标。
+        """
+        algo = self._sdk._algo
+        if not algo.is_ready or not algo._robot:
+            self.logger.warn(f'{self._tag} Algo未就绪')
+            return None
+
+        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+        # URDF 中 D1 轴方向与 Isaac Sim 当前反馈符号相反。
+        algo._robot.set_turntable_angle(-d1_deg)
+
+        with self._lock:
+            q_ref_deg = [math.degrees(q) for q in self._current_joints]
+
+        self.logger.info(
+            f'{self._tag} 世界=[{x:.3f},{y:.3f},{z:.3f}] (D1={d1_deg:.1f}°)')
+
+        result = algo._robot.inverse_kinematics(
+            target_position=[x, y, z],
+            target_orientation_deg=[
+                math.degrees(rx),
+                math.degrees(ry),
+                math.degrees(rz),
+            ],
+            current_joint_angles_deg=q_ref_deg,
+        )
+        if not result or not result.get('success'):
+            self.logger.warn(
+                f'{self._tag} IK求解失败 '
+                f'(世界=[{x:.3f},{y:.3f},{z:.3f}])')
+            return None
+
+        return [math.radians(d) for d in result['joint_angles_deg']]
+
     # ─── 执行逻辑 ───
 
     def _exec_movel(self, msg: Movel):
@@ -290,25 +282,13 @@ class ArmBridge:
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: 臂基座Pose → SDK IK → 关节角度 → /target_joints"""
+        """sim模式: 世界坐标系Pose → RM65Robot IK → 关节角度"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
 
-        self.logger.info(
-            f'{self._tag} '
-            f'臂基座=[{x:.4f},{y:.4f},{z:.4f}]')
-
-        with self._lock:
-            q_ref = list(self._current_joints)
-
-        joints = self._sdk.inverse_kinematics(
-            x, y, z, rx, ry, rz, q_ref=q_ref)
-
+        joints = self.world_pose_to_joints(x, y, z, rx, ry, rz)
         if joints is None:
-            self.logger.warn(
-                f'{self._tag} IK求解失败 '
-                f'(臂基座=[{x:.3f},{y:.3f},{z:.3f},{rx:.3f},{ry:.3f},{rz:.3f}])')
             return False
 
         return self._sim_move_joints(joints)
@@ -438,11 +418,11 @@ class UnifiedArmNode(Node):
         self.declare_parameter('sim_motion_timeout', 10.0)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
-        self.declare_parameter('arm_a.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_a.base_orientation_deg', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
+        self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
         self.declare_parameter('arm_a.d6_mm', 172.5)
-        self.declare_parameter('arm_b.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_b.base_orientation_deg', [0.0, 0.0, 0.0])
+        self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
+        self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
         self.declare_parameter('arm_b.d6_mm', 172.5)
         self.declare_parameter('arm_s.base_position', [0.0, 0.0, 0.0])
         self.declare_parameter('arm_s.base_orientation_deg', [0.0, 0.0, 0.0])
@@ -493,10 +473,18 @@ class UnifiedArmNode(Node):
             port = self.get_parameter(f'{arm_name}.port').value
             arm_id = arm_name[-1].upper()
 
+            # 获取 base 参数
+            base_position = list(self.get_parameter(f'{arm_name}.base_position').value)
+            base_orientation_deg = list(self.get_parameter(f'{arm_name}.base_orientation_deg').value)
+            d6_mm = self.get_parameter(f'{arm_name}.d6_mm').value
+
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
                 sim_joint_tol=self._sim_joint_tol,
-                sim_motion_timeout=self._sim_motion_timeout)
+                sim_motion_timeout=self._sim_motion_timeout,
+                base_position=base_position,
+                base_orientation_deg=base_orientation_deg,
+                d6_mm=d6_mm)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
                 bridge.set_d1_angle_fn(self._get_current_d1)
