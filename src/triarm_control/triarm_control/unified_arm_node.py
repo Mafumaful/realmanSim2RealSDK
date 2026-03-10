@@ -75,7 +75,7 @@ class ArmBridge:
     def __init__(self, node: Node, arm_name: str, mode: str,
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
-                 sim_motion_timeout: float = 10.0,
+                 sim_motion_timeout: float = 20.0,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
                  d6_mm: float = 172.5):
@@ -97,6 +97,7 @@ class ArmBridge:
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
+        self._commanded_joints = [0.0] * 6  # /joint_command 中的6关节弧度
         self._current_pose = Pose()
         self._lock = threading.Lock()
 
@@ -205,7 +206,10 @@ class ArmBridge:
             q_ref_deg = [math.degrees(q) for q in self._current_joints]
 
         self.logger.info(
-            f'{self._tag} 世界=[{x:.3f},{y:.3f},{z:.3f}] (D1={d1_deg:.1f}°)')
+            f'{self._tag} '
+            f'世界xyz=[{x:.3f},{y:.3f},{z:.3f}] '
+            f'rpy=[{rx:.3f},{ry:.3f},{rz:.3f}] '
+            f'(D1={d1_deg:.1f}°)')
 
         result = algo._robot.inverse_kinematics(
             target_position=[x, y, z],
@@ -219,7 +223,9 @@ class ArmBridge:
         if not result or not result.get('success'):
             self.logger.warn(
                 f'{self._tag} IK求解失败 '
-                f'(世界=[{x:.3f},{y:.3f},{z:.3f}])')
+                f'(世界xyz=[{x:.3f},{y:.3f},{z:.3f}] '
+                f'rpy=[{rx:.3f},{ry:.3f},{rz:.3f}], '
+                f'q_ref_deg={[round(v, 1) for v in q_ref_deg]})')
             return None
 
         return [math.radians(d) for d in result['joint_angles_deg']]
@@ -321,10 +327,19 @@ class ArmBridge:
             time.sleep(0.05)
             with self._lock:
                 current = list(self._current_joints)
+                commanded = list(self._commanded_joints)
             max_err = max(abs(c - t) for c, t in zip(current, target))
             if max_err < self._sim_joint_tol:
                 self.logger.info(
                     f'{self._tag} sim关节到位 (max_err={max_err:.4f} rad)')
+                return True
+            cmd_err = max(abs(c - t) for c, t in zip(commanded, target))
+            if cmd_err < self._sim_joint_tol:
+                self.logger.warn(
+                    f'{self._tag} /joint_states 未及时收敛，'
+                    f'使用 /joint_command 兜底判定到位 '
+                    f'(cmd_err={cmd_err:.4f} rad, '
+                    f'state_err={max_err:.4f} rad)')
                 return True
 
         self.logger.warn(
@@ -397,6 +412,13 @@ class ArmBridge:
         with self._lock:
             self._current_joints = vals
 
+    def update_commanded_joints(self, joint_positions: list):
+        """从 /joint_command 更新当前插值命令关节状态"""
+        vals = [joint_positions[idx] if idx < len(joint_positions) else 0.0
+                for idx in self._joint_indices]
+        with self._lock:
+            self._commanded_joints = vals
+
 
 class UnifiedArmNode(Node):
     """统一机械臂节点 - 管理所有臂的桥接"""
@@ -415,7 +437,7 @@ class UnifiedArmNode(Node):
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.03)
-        self.declare_parameter('sim_motion_timeout', 10.0)
+        self.declare_parameter('sim_motion_timeout', 20.0)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
@@ -465,6 +487,12 @@ class UnifiedArmNode(Node):
             self._gripper_target_sub = self.create_subscription(
                 Float64MultiArray, f'{prefix}gripper_target',
                 self._on_gripper_target, 10)
+
+            # 订阅 /joint_command (controller_node 插值输出)
+            # 作为 sim 运动完成判定的兜底反馈，同时同步共享目标。
+            self._cmd_sync_sub = self.create_subscription(
+                JointState, f'{prefix}joint_command',
+                self._on_cmd_sync, 10)
 
         # 创建 A/B 臂桥接器
         self._bridges = {}
@@ -527,6 +555,20 @@ class UnifiedArmNode(Node):
             self._base_angle_pub.publish(angle_msg)
 
     # ─── 共享目标管理 (sim模式) ───
+
+    def _on_cmd_sync(self, msg: JointState):
+        """从 controller_node 的 /joint_command 同步插值命令状态"""
+        name_to_pos = dict(zip(msg.name, msg.position))
+        positions = [name_to_pos.get(n, 0.0) for n in JOINT_NAMES_LIST]
+
+        for bridge in self._bridges.values():
+            bridge.update_commanded_joints(positions)
+
+        with self._shared_target_lock:
+            for i, name in enumerate(msg.name):
+                if i < len(msg.position) and name in JOINT_NAMES_LIST:
+                    idx = JOINT_NAMES_LIST.index(name)
+                    self._shared_target[idx] = math.degrees(msg.position[i])
 
     def _get_current_d1(self) -> float:
         """获取当前D1角度 (度)"""

@@ -587,7 +587,10 @@ class JointControlGUI(Node):
             self.movep_pubs[arm].publish(msg)
         self.world_pose_status.config(text='执行中...', foreground='orange')
         self._last_target_pose = vals  # 记录目标位姿
-        self.get_logger().info(f'{mode} → {arm}: [{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}]')
+        self.get_logger().info(
+            f'{mode} → {arm}: '
+            f'xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] '
+            f'rpy=[{vals[3]:.3f},{vals[4]:.3f},{vals[5]:.3f}]')
 
     def _on_move_result(self, msg: Bool):
         """处理运动结果"""
