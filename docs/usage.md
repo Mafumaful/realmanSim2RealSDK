@@ -78,7 +78,7 @@ ros2 run triarm_control gui
 2. 启动本 SDK：`ros2 launch triarm_control triarm_control.launch.py mode:=sim`
 3. 启动视觉服务：`ros2 launch contact_graspnet_ros2 grasp_hybrid_server.launch.py`
 4. 启动状态机：`ros2 run contact_graspnet_ros2 grasp_state_machine`
-5. 发送启动指令：`ros2 topic pub --once /state_machine/start std_msgs/Empty`
+5. 发送启动指令：`ros2 service call /state_machine/start std_srvs/srv/Trigger`
 
 ---
 

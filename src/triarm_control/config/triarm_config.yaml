@@ -28,7 +28,8 @@ unified_arm_node:
     mode: "sim"             # sim / real
     publish_rate: 20.0      # 状态发布频率 (Hz)
     sim_joint_tolerance: 0.02   # sim运动完成检测阈值 (弧度)
-    sim_motion_timeout: 20.0    # sim运动完成超时 (秒)
+    sim_motion_timeout: 40.0    # sim主等待超时 (秒)
+    sim_motion_grace_period: 8.0   # 主超时后额外收敛等待 (秒)
     # A臂 (left)
     arm_a:
       ip: "192.168.1.18"

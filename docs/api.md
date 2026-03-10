@@ -152,15 +152,15 @@ rotate_cmd → 更新 _shared_target[0] (D1) → /target_joints
 
 ---
 
-## 6. 状态机控制话题
+## 6. 状态机控制接口
 
-这些话题由上层 `grasp_state_machine` 使用，不属于本 SDK，但列出以便理解完整系统：
+这些服务/话题由上层 `grasp_state_machine` 使用，不属于本 SDK，但列出以便理解完整系统：
 
-| 话题 | 消息类型 | 说明 |
-|------|----------|------|
-| `/state_machine/start` | `std_msgs/Empty` | 启动作业 |
-| `/state_machine/reset` | `std_msgs/Empty` | 复位 |
-| `/state_machine/fault_clear` | `std_msgs/Empty` | 清除故障 |
+| 服务/话题 | 类型 | 说明 |
+|-----------|------|------|
+| `/state_machine/start` (srv) | `std_srvs/Trigger` | 启动作业 |
+| `/state_machine/reset` (srv) | `std_srvs/Trigger` | 复位 |
+| `/state_machine/fault_clear` (srv) | `std_srvs/Trigger` | 清除故障 |
 | `/state_machine/state` | `std_msgs/String` | 状态发布 |
 
 ---

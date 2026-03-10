@@ -6,6 +6,8 @@
 """
 
 import math
+import threading
+import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -95,14 +97,23 @@ class JointControlGUI(Node):
 
         # 订阅运动结果
         for arm in ['arm_a', 'arm_b']:
-            self.create_subscription(Bool, f'{arm}/rm_driver/movel_result', self._on_move_result, 10)
-            self.create_subscription(Bool, f'{arm}/rm_driver/movej_p_result', self._on_move_result, 10)
-            self.create_subscription(Bool, f'{arm}/rm_driver/movep_result', self._on_move_result, 10)
+            self.create_subscription(
+                Bool, f'{arm}/rm_driver/movel_result',
+                self._make_move_result_cb(arm, 'movel'), 10)
+            self.create_subscription(
+                Bool, f'{arm}/rm_driver/movej_p_result',
+                self._make_move_result_cb(arm, 'movejp'), 10)
+            self.create_subscription(
+                Bool, f'{arm}/rm_driver/movep_result',
+                self._make_move_result_cb(arm, 'movep'), 10)
 
         # 状态
         self.current_positions = [0.0] * TOTAL_JOINT_COUNT
         self.cmd_positions = [0.0] * TOTAL_JOINT_COUNT
         self.has_state = False
+        self._world_pose_cmd_seq = 0
+        self._pending_world_pose_cmd = None
+        self._world_pose_cmd_lock = threading.Lock()
 
         # per-arm 算法库 (带各自 base 参数, 与 unified_arm_node 保持一致)
         self._algos = {}
@@ -586,21 +597,116 @@ class JointControlGUI(Node):
             msg = Movel(pose=pose, speed=speed)
             self.movep_pubs[arm].publish(msg)
         self.world_pose_status.config(text='执行中...', foreground='orange')
-        self._last_target_pose = vals  # 记录目标位姿
+        with self._world_pose_cmd_lock:
+            self._world_pose_cmd_seq += 1
+            self._pending_world_pose_cmd = {
+                'seq': self._world_pose_cmd_seq,
+                'arm': arm,
+                'mode': mode,
+                'target': list(vals),
+                'sent_at': time.time(),
+            }
         self.get_logger().info(
             f'{mode} → {arm}: '
             f'xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] '
             f'rpy=[{vals[3]:.3f},{vals[4]:.3f},{vals[5]:.3f}]')
 
-    def _on_move_result(self, msg: Bool):
-        """处理运动结果"""
-        if msg.data:
-            self.world_pose_status.config(text='执行成功', foreground='green')
-        else:
-            vals = getattr(self, '_last_target_pose', [0]*6)
+    def _make_move_result_cb(self, arm: str, mode: str):
+        def _cb(msg: Bool):
+            self._on_move_result(arm, mode, msg)
+        return _cb
+
+    def _current_world_pose(self, arm: str):
+        if not self.has_state:
+            return None
+        algo = self._algos.get(arm)
+        if not algo or not algo.is_ready:
+            return None
+
+        arm_prefix = 'A' if arm == 'arm_a' else 'B'
+        indices = [JOINT_NAMES_LIST.index(f'joint_platform_{arm_prefix}{i}')
+                   for i in range(1, 7)]
+        joints_deg = [math.degrees(self.current_positions[i]) for i in indices]
+        d1_deg = math.degrees(self.current_positions[0])
+        algo._robot.set_turntable_angle(-d1_deg)
+        return algo.forward_kinematics(joints_deg, 1)
+
+    @staticmethod
+    def _angle_diff(a: float, b: float) -> float:
+        diff = a - b
+        while diff > math.pi:
+            diff -= 2 * math.pi
+        while diff < -math.pi:
+            diff += 2 * math.pi
+        return abs(diff)
+
+    def _is_pose_close(self, current, target,
+                       pos_tol: float = 0.03,
+                       rot_tol: float = 0.12) -> bool:
+        pos_err = max(abs(current[i] - target[i]) for i in range(3))
+        rot_err = max(self._angle_diff(current[i], target[i]) for i in range(3, 6))
+        return pos_err <= pos_tol and rot_err <= rot_tol
+
+    def _verify_move_result(self, expected_seq: int, arm: str, mode: str,
+                            target: list, result_ok: bool):
+        """延迟核对实际位姿，避免旧 result 把当前命令误判为失败。"""
+        deadline = time.time() + (2.0 if result_ok else 6.0)
+        poll_interval = 0.12
+
+        if not result_ok:
             self.world_pose_status.config(
-                text=f'求解失败 xyz=[{vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f}] rpy=[{vals[3]:.2f},{vals[4]:.2f},{vals[5]:.2f}]',
-                foreground='red')
+                text='执行中(收到失败结果，等待实际位姿确认)', foreground='orange')
+
+        while time.time() < deadline:
+            with self._world_pose_cmd_lock:
+                pending = self._pending_world_pose_cmd
+            if not pending or pending['seq'] != expected_seq:
+                return
+
+            current = self._current_world_pose(arm)
+            if current is not None and self._is_pose_close(current, target):
+                self.world_pose_status.config(text='执行成功', foreground='green')
+                with self._world_pose_cmd_lock:
+                    if (self._pending_world_pose_cmd and
+                            self._pending_world_pose_cmd['seq'] == expected_seq):
+                        self._pending_world_pose_cmd = None
+                return
+            time.sleep(poll_interval)
+
+        with self._world_pose_cmd_lock:
+            pending = self._pending_world_pose_cmd
+        if not pending or pending['seq'] != expected_seq:
+            return
+
+        if result_ok:
+            self.world_pose_status.config(text='执行中(等待状态收敛)', foreground='orange')
+            return
+
+        self.world_pose_status.config(
+            text=(
+                f'求解/执行失败 xyz=[{target[0]:.3f},{target[1]:.3f},{target[2]:.3f}] '
+                f'rpy=[{target[3]:.2f},{target[4]:.2f},{target[5]:.2f}]'
+            ),
+            foreground='red')
+        with self._world_pose_cmd_lock:
+            if (self._pending_world_pose_cmd and
+                    self._pending_world_pose_cmd['seq'] == expected_seq):
+                self._pending_world_pose_cmd = None
+
+    def _on_move_result(self, arm: str, mode: str, msg: Bool):
+        """处理运动结果。GUI 只把与当前待执行命令匹配的结果用于状态展示。"""
+        with self._world_pose_cmd_lock:
+            pending = dict(self._pending_world_pose_cmd) if self._pending_world_pose_cmd else None
+        if not pending:
+            return
+        if pending['arm'] != arm or pending['mode'] != mode:
+            return
+
+        threading.Thread(
+            target=self._verify_move_result,
+            args=(pending['seq'], arm, mode, pending['target'], msg.data),
+            daemon=True
+        ).start()
 
     def _read_current_pose(self):
         """从当前关节状态做正解，将世界坐标系位姿填入输入框"""

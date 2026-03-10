@@ -75,7 +75,8 @@ class ArmBridge:
     def __init__(self, node: Node, arm_name: str, mode: str,
                  ip: str, port: int, arm_id: str,
                  sim_joint_tol: float = 0.02,
-                 sim_motion_timeout: float = 20.0,
+                 sim_motion_timeout: float = 40.0,
+                 sim_motion_grace_period: float = 8.0,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
                  d6_mm: float = 172.5):
@@ -87,6 +88,7 @@ class ArmBridge:
         self._joint_indices = ARM_JOINT_INDICES.get(arm_name, [])
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
+        self._sim_motion_grace_period = sim_motion_grace_period
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(
@@ -319,6 +321,8 @@ class ArmBridge:
 
         # 轮询等待关节到位 (可被 stop_event 取消)
         target = list(joints)
+        max_err = float('inf')
+        cmd_err = float('inf')
         start = time.time()
         while time.time() - start < self._sim_motion_timeout:
             if self._stop_event.is_set():
@@ -342,8 +346,39 @@ class ArmBridge:
                     f'state_err={max_err:.4f} rad)')
                 return True
 
+        # /joint_states 在 Isaac Sim 中经常明显滞后于 /joint_command。
+        # 已经接近目标时再给一段缓冲时间，避免最后收敛阶段被过早判超时。
+        if self._sim_motion_grace_period > 0.0:
+            self.logger.warn(
+                f'{self._tag} 主超时已到，进入额外等待 '
+                f'({self._sim_motion_grace_period}s, '
+                f'cmd_err={cmd_err:.4f} rad, state_err={max_err:.4f} rad)')
+            grace_start = time.time()
+            while time.time() - grace_start < self._sim_motion_grace_period:
+                if self._stop_event.is_set():
+                    self.logger.warn(f'{self._tag} sim运动被取消')
+                    return False
+                time.sleep(0.05)
+                with self._lock:
+                    current = list(self._current_joints)
+                    commanded = list(self._commanded_joints)
+                max_err = max(abs(c - t) for c, t in zip(current, target))
+                if max_err < self._sim_joint_tol:
+                    self.logger.info(
+                        f'{self._tag} sim关节到位(额外等待) '
+                        f'(max_err={max_err:.4f} rad)')
+                    return True
+                cmd_err = max(abs(c - t) for c, t in zip(commanded, target))
+                if cmd_err < self._sim_joint_tol:
+                    self.logger.warn(
+                        f'{self._tag} 额外等待阶段使用 /joint_command 兜底判定到位 '
+                        f'(cmd_err={cmd_err:.4f} rad, '
+                        f'state_err={max_err:.4f} rad)')
+                    return True
+
         self.logger.warn(
-            f'{self._tag} sim运动超时 ({self._sim_motion_timeout}s) '
+            f'{self._tag} sim运动超时 '
+            f'({self._sim_motion_timeout + self._sim_motion_grace_period}s) '
             f'max_err={max_err:.4f} rad ({math.degrees(max_err):.2f}°)')
         return False
 
@@ -437,7 +472,8 @@ class UnifiedArmNode(Node):
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.03)
-        self.declare_parameter('sim_motion_timeout', 20.0)
+        self.declare_parameter('sim_motion_timeout', 40.0)
+        self.declare_parameter('sim_motion_grace_period', 8.0)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
@@ -455,6 +491,8 @@ class UnifiedArmNode(Node):
         rate = self.get_parameter('publish_rate').value
         self._sim_joint_tol = self.get_parameter('sim_joint_tolerance').value
         self._sim_motion_timeout = self.get_parameter('sim_motion_timeout').value
+        self._sim_motion_grace_period = self.get_parameter(
+            'sim_motion_grace_period').value
 
         self.get_logger().info(f'=== UnifiedArmNode 启动 (mode={mode}) ===')
 
@@ -510,6 +548,7 @@ class UnifiedArmNode(Node):
                 self, arm_name, mode, ip, port, arm_id,
                 sim_joint_tol=self._sim_joint_tol,
                 sim_motion_timeout=self._sim_motion_timeout,
+                sim_motion_grace_period=self._sim_motion_grace_period,
                 base_position=base_position,
                 base_orientation_deg=base_orientation_deg,
                 d6_mm=d6_mm)
