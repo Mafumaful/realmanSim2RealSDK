@@ -30,10 +30,11 @@ from typing import List, Optional
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, TransformStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
+from tf2_ros import TransformBroadcaster
 
 import transforms3d.quaternions as txq
 import transforms3d.euler as txe
@@ -571,6 +572,16 @@ class UnifiedArmNode(Node):
         self._state_timer = self.create_timer(
             period, self._publish_states)
 
+        # sim模式: 启动时发布零位目标，确保机械臂归零
+        if mode == 'sim' and self._target_joints_pub:
+            self._init_timer = self.create_timer(0.5, self._publish_initial_zero_position)
+        else:
+            self._init_timer = None
+
+        # TF发布器：动态发布平台和相机TF
+        self._tf_broadcaster = TransformBroadcaster(self)
+        self._publish_base_tfs()  # 发布基础静态TF
+
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
 
     def _sim_state_cb(self, msg: JointState):
@@ -693,9 +704,90 @@ class UnifiedArmNode(Node):
         result.data = False
         self._rotate_result_pub.publish(result)
 
+    def _publish_initial_zero_position(self):
+        """启动时发布零位目标（仅执行一次）"""
+        if self._target_joints_pub:
+            msg = Float64MultiArray()
+            msg.data = self._shared_target.copy()
+            self._target_joints_pub.publish(msg)
+            self.get_logger().info('已发布初始零位目标')
+        if self._init_timer:
+            self._init_timer.cancel()
+            self._init_timer = None
+
+    def _publish_base_tfs(self):
+        """发布基础静态TF：base_link → platform_link"""
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = 'base_link'
+        t.child_frame_id = 'platform_link'
+        t.transform.translation.z = 0.05
+        t.transform.rotation.w = 1.0
+        self._tf_broadcaster.sendTransform(t)
+
+    def _publish_camera_tfs(self):
+        """根据当前关节状态发布相机TF（动态更新）"""
+        transforms = []
+        now = self.get_clock().now().to_msg()
+
+        # A臂腕部相机：使用A臂末端位置
+        if 'arm_a' in self._bridges:
+            bridge_a = self._bridges['arm_a']
+            joints_a = [math.degrees(j) for j in bridge_a._current_joints]
+            pose_a = bridge_a._sdk._algo.forward_kinematics(joints_a)
+            if pose_a:
+                t = TransformStamped()
+                t.header.stamp = now
+                t.header.frame_id = 'platform_link'
+                t.child_frame_id = 'camera_a_link'
+                t.transform.translation.x = pose_a[0]
+                t.transform.translation.y = pose_a[1]
+                t.transform.translation.z = pose_a[2]
+                q = txq.axangle2quat([0, 0, 1], pose_a[5])
+                t.transform.rotation.x = q[1]
+                t.transform.rotation.y = q[2]
+                t.transform.rotation.z = q[3]
+                t.transform.rotation.w = q[0]
+                transforms.append(t)
+
+        # B臂腕部相机：使用B臂末端位置
+        if 'arm_b' in self._bridges:
+            bridge_b = self._bridges['arm_b']
+            joints_b = [math.degrees(j) for j in bridge_b._current_joints]
+            pose_b = bridge_b._sdk._algo.forward_kinematics(joints_b)
+            if pose_b:
+                t = TransformStamped()
+                t.header.stamp = now
+                t.header.frame_id = 'platform_link'
+                t.child_frame_id = 'camera_b_link'
+                t.transform.translation.x = pose_b[0]
+                t.transform.translation.y = pose_b[1]
+                t.transform.translation.z = pose_b[2]
+                q = txq.axangle2quat([0, 0, 1], pose_b[5])
+                t.transform.rotation.x = q[1]
+                t.transform.rotation.y = q[2]
+                t.transform.rotation.z = q[3]
+                t.transform.rotation.w = q[0]
+                transforms.append(t)
+
+        # Link_S6 (S臂末端全局相机) - 暂时固定，待S臂启用后计算
+        t = TransformStamped()
+        t.header.stamp = now
+        t.header.frame_id = 'platform_link'
+        t.child_frame_id = 'Link_S6'
+        t.transform.translation.x = 0.4
+        t.transform.translation.z = 0.65
+        t.transform.rotation.w = 1.0
+        transforms.append(t)
+
+        if transforms:
+            self._tf_broadcaster.sendTransform(transforms)
+
     def _publish_states(self):
         for bridge in self._bridges.values():
             bridge.publish_state()
+        # 动态发布相机TF
+        self._publish_camera_tfs()
 
     def destroy_node(self):
         for bridge in self._bridges.values():
