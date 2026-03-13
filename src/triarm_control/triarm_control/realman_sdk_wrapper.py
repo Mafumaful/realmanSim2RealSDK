@@ -481,15 +481,20 @@ class RealManSDKWrapper:
     def get_joint_positions(self) -> Optional[List[float]]:
         """获取当前关节角度 (弧度)"""
         if not self._tcp_connected:
+            print(f'{self._tag} get_joint_positions: TCP未连接')
             return None
         with self._lock:
             try:
                 ret = self._robot.rm_get_joint_degree()
                 if ret[0] == 0:
-                    return [math.radians(d) for d in ret[1]]
-                return None
+                    joints = [math.radians(d) for d in ret[1]]
+                    print(f'{self._tag} 读取关节角度成功: {[f"{j:.3f}" for j in joints]}')
+                    return joints
+                else:
+                    print(f'{self._tag} 读取关节角度失败: ret[0]={ret[0]}')
+                    return None
             except Exception as e:
-                print(f'{self._tag} 获取关节角度失败: {e}')
+                print(f'{self._tag} 获取关节角度异常: {e}')
                 return None
 
     def get_current_pose(self) -> Optional[dict]:
