@@ -509,6 +509,12 @@ class UnifiedArmNode(Node):
         self._d1_lock = threading.Lock()
         self._current_d1_angle = 0.0
 
+        # 合并的joint_states发布器 (real/sim通用)
+        self._merged_joint_states_pub = self.create_publisher(
+            JointState, f'{prefix}joint_states', 10)
+        self._merged_joint_command_pub = self.create_publisher(
+            JointState, f'{prefix}joint_command', 10)
+
         if mode == 'sim':
             self._target_joints_pub = self.create_publisher(
                 Float64MultiArray, f'{prefix}target_joints', 10)
@@ -786,6 +792,26 @@ class UnifiedArmNode(Node):
     def _publish_states(self):
         for bridge in self._bridges.values():
             bridge.publish_state()
+
+        # real模式: 合并各臂关节状态发布到 robot/joint_states
+        if self._mode == 'real':
+            merged_positions = [0.0] * TOTAL_JOINT_COUNT
+
+            # 收集各臂关节数据
+            for arm_name, bridge in self._bridges.items():
+                indices = ARM_JOINT_INDICES.get(arm_name, [])
+                with bridge._lock:
+                    for i, idx in enumerate(indices):
+                        if i < len(bridge._current_joints):
+                            merged_positions[idx] = bridge._current_joints[i]
+
+            # 发布合并的joint_states
+            js_msg = JointState()
+            js_msg.header.stamp = self.get_clock().now().to_msg()
+            js_msg.name = JOINT_NAMES_LIST
+            js_msg.position = merged_positions
+            self._merged_joint_states_pub.publish(js_msg)
+
         # 动态发布相机TF
         self._publish_camera_tfs()
 

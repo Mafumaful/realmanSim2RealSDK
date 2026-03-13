@@ -30,7 +30,7 @@ unified_arm_node:
     sim_motion_grace_period: 8.0   # 主超时后额外收敛等待 (秒)
     # A臂 (left)
     arm_a:
-      ip: "192.168.1.18"
+      ip: "192.168.30.124"
       port: 8080
       # RM65Robot IK/FK 参数 (单位: m, deg)
       base_position: [0.05457, -0.04863, 0.2273]           # 机械臂base相对转盘的位置
@@ -38,7 +38,7 @@ unified_arm_node:
       d6_mm: 172.5                                          # 末端 d6 参数 (RM65-6F)
     # B臂 (right)
     arm_b:
-      ip: "192.168.1.19"
+      ip: "192.168.30.123"
       port: 8080
       # RM65Robot IK/FK 参数 (单位: m, deg)
       base_position: [-0.04867, -0.05374, 0.2273]
