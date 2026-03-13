@@ -34,6 +34,7 @@ class JointControlGUI(Node):
 
         # 声明参数
         self.declare_parameter('namespace', 'robot')
+        self.declare_parameter('mode', 'sim')
         self.declare_parameter('gui_width', 700)
         self.declare_parameter('gui_height', 600)
 
@@ -47,6 +48,7 @@ class JointControlGUI(Node):
 
         # 获取参数
         ns = self.get_parameter('namespace').value
+        self.mode = self.get_parameter('mode').value
         self.gui_width = self.get_parameter('gui_width').value
         self.gui_height = self.get_parameter('gui_height').value
 
@@ -69,6 +71,14 @@ class JointControlGUI(Node):
 
         # 发布目标位置
         self.target_pub = self.create_publisher(Float64MultiArray, target_topic, 10)
+
+        # Real模式：创建rm_driver发布器
+        if self.mode == 'real':
+            self.movej_pub_a = self.create_publisher(
+                Movej, '/arm_a/rm_driver/movej_cmd', 10)
+            self.movej_pub_b = self.create_publisher(
+                Movej, '/arm_b/rm_driver/movej_cmd', 10)
+            self.get_logger().info('Real模式：已创建rm_driver发布器')
 
         # 发布夹爪目标 (供 gripper_bridge real模式 和 unified_arm_node sim模式 使用)
         gripper_topic = f'{prefix}gripper_target'
@@ -555,10 +565,25 @@ class JointControlGUI(Node):
             except ValueError:
                 pass
 
-        msg = Float64MultiArray()
-        msg.data = targets
-        self.target_pub.publish(msg)
-        self.status_label.config(text='已发送', foreground='orange')
+        if self.mode == 'sim':
+            # Sim模式：发送到Controller
+            msg = Float64MultiArray()
+            msg.data = targets
+            self.target_pub.publish(msg)
+            self.status_label.config(text='已发送', foreground='orange')
+        else:
+            # Real模式：直接发送rm_driver指令
+            # A臂 (index 1-6)
+            msg_a = Movej()
+            msg_a.joint = [math.radians(targets[i]) for i in range(1, 7)]
+            msg_a.speed = 20
+            self.movej_pub_a.publish(msg_a)
+            # B臂 (index 7-12)
+            msg_b = Movej()
+            msg_b.joint = [math.radians(targets[i]) for i in range(7, 13)]
+            msg_b.speed = 20
+            self.movej_pub_b.publish(msg_b)
+            self.status_label.config(text='已发送(Real)', foreground='green')
 
     def _reset_all(self):
         for idx, entry, _, _ in self.entries:

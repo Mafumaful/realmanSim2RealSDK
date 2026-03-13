@@ -93,6 +93,7 @@ def generate_launch_description():
         name='triarm_gui',
         parameters=[config_file, {
             'namespace': LaunchConfiguration('namespace'),
+            'mode': LaunchConfiguration('mode'),
         }],
         condition=IfCondition(
             PythonExpression(["'", LaunchConfiguration('with_gui'), "' == 'true'"])

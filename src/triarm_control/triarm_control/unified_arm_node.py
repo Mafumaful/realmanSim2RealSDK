@@ -277,16 +277,28 @@ class ArmBridge:
     # ─── Real 模式 ───
 
     def _real_movel(self, x, y, z, rx, ry, rz, speed) -> bool:
+        self.logger.info(f'{self._tag} Real MoveL: xyz=[{x:.3f},{y:.3f},{z:.3f}] speed={speed}')
         ret = self._sdk.movel(x, y, z, rx, ry, rz, speed)
-        return ret == SDKMotionResult.SUCCESS
+        success = ret == SDKMotionResult.SUCCESS
+        if not success:
+            self.logger.error(f'{self._tag} Real MoveL失败: {ret}')
+        return success
 
     def _real_movej(self, joints, speed) -> bool:
+        self.logger.info(f'{self._tag} Real MoveJ: joints={[f"{math.degrees(j):.1f}" for j in joints[:3]]}... speed={speed}')
         ret = self._sdk.movej(joints, speed)
-        return ret == SDKMotionResult.SUCCESS
+        success = ret == SDKMotionResult.SUCCESS
+        if not success:
+            self.logger.error(f'{self._tag} Real MoveJ失败: {ret}')
+        return success
 
     def _real_movejp(self, x, y, z, rx, ry, rz, speed) -> bool:
+        self.logger.info(f'{self._tag} Real MoveJP: xyz=[{x:.3f},{y:.3f},{z:.3f}] speed={speed}')
         ret = self._sdk.movej_p(x, y, z, rx, ry, rz, speed)
-        return ret == SDKMotionResult.SUCCESS
+        success = ret == SDKMotionResult.SUCCESS
+        if not success:
+            self.logger.error(f'{self._tag} Real MoveJP失败: {ret}')
+        return success
 
     # ─── Sim 模式 ───
 
@@ -776,14 +788,20 @@ class UnifiedArmNode(Node):
                 t.transform.rotation.w = q[0]
                 transforms.append(t)
 
-        # Link_S6 (S臂末端全局相机) - 暂时固定，待S臂启用后计算
+        # Link_S6 (S臂末端全局相机) - 使用Isaac Sim实际位置
         t = TransformStamped()
         t.header.stamp = now
         t.header.frame_id = 'platform_link'
         t.child_frame_id = 'Link_S6'
-        t.transform.translation.x = 0.4
-        t.transform.translation.z = 0.65
-        t.transform.rotation.w = 1.0
+        t.transform.translation.x = 0.40197
+        t.transform.translation.y = 0.08106
+        t.transform.translation.z = 0.63422
+        # 相机向下看：绕x轴旋转180°（匹配Isaac Sim）
+        q = txq.axangle2quat([1, 0, 0], math.radians(180))
+        t.transform.rotation.x = q[1]
+        t.transform.rotation.y = q[2]
+        t.transform.rotation.z = q[3]
+        t.transform.rotation.w = q[0]
         transforms.append(t)
 
         if transforms:
