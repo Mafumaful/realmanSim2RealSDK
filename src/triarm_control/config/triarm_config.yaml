@@ -3,7 +3,6 @@
 triarm_controller:
   ros__parameters:
     namespace: "robot"
-    mode: "sim"             # 运行模式: sim (Isaac Sim) / real (真实机械臂)
     joint_velocity: 30.0    # 关节运动速度 (度/秒)
     publish_rate: 50.0      # 指令发布频率 (Hz)
     enable_smooth: true     # 是否启用平滑处理
@@ -25,7 +24,6 @@ triarm_controller:
 unified_arm_node:
   ros__parameters:
     namespace: "robot"
-    mode: "sim"             # sim / real
     publish_rate: 20.0      # 状态发布频率 (Hz)
     sim_joint_tolerance: 0.02   # sim运动完成检测阈值 (弧度)
     sim_motion_timeout: 40.0    # sim主等待超时 (秒)
@@ -59,7 +57,6 @@ unified_arm_node:
 # 夹爪桥接节点配置
 gripper_bridge_node:
   ros__parameters:
-    mode: "sim"             # sim / real
     namespace: "robot"
     # real 模式: Modbus RTU 串口配置 (crt_ctag2f90c)
     gripper_a:
