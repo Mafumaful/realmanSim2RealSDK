@@ -243,7 +243,7 @@ class ArmBridge:
             if self.mode == 'real':
                 success = self._real_movel(x, y, z, rx, ry, rz, speed)
             else:
-                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
+                success = self._sim_movel_cartesian(x, y, z, rx, ry, rz)
         result = Bool()
         result.data = success
         self._movel_result_pub.publish(result)
@@ -313,6 +313,66 @@ class ArmBridge:
             return False
 
         return self._sim_move_joints(joints)
+
+    def _sim_movel_cartesian(self, x_end, y_end, z_end, rx_end, ry_end, rz_end) -> bool:
+        """sim模式: 笛卡尔空间直线插值"""
+        if not self._sdk.is_ready:
+            self.logger.error(f'{self._tag} SDK未就绪')
+            return False
+
+        # 获取当前位姿
+        with self._lock:
+            current_joints = list(self._current_joints)
+        pose_dict = self._sdk.forward_kinematics(current_joints)
+        if not pose_dict:
+            self.logger.error(f'{self._tag} FK失败')
+            return False
+
+        x_start, y_start, z_start = pose_dict['x'], pose_dict['y'], pose_dict['z']
+        rx_start, ry_start, rz_start = pose_dict['rx'], pose_dict['ry'], pose_dict['rz']
+
+        # 计算插值步数
+        distance = math.sqrt((x_end - x_start)**2 + (y_end - y_start)**2 + (z_end - z_start)**2)
+        num_steps = max(10, int(math.ceil(distance / 0.01)))
+
+        # 欧拉角转四元数
+        R_start = txe.euler2mat(rx_start, ry_start, rz_start, 'sxyz')
+        q_start = txq.mat2quat(R_start)
+        R_end = txe.euler2mat(rx_end, ry_end, rz_end, 'sxyz')
+        q_end = txq.mat2quat(R_end)
+
+        self.logger.info(f'{self._tag} 笛卡尔插值: {num_steps}步, 距离={distance:.3f}m')
+
+        # 逐点插值并发送
+        for i in range(1, num_steps + 1):
+            if self._stop_event.is_set():
+                self.logger.warn(f'{self._tag} 运动被取消')
+                return False
+
+            t = i / num_steps
+            # 位置线性插值
+            x_interp = x_start + t * (x_end - x_start)
+            y_interp = y_start + t * (y_end - y_start)
+            z_interp = z_start + t * (z_end - z_start)
+
+            # 姿态SLERP插值
+            q_interp = txq.slerp(q_start, q_end, t)
+            R_interp = txq.quat2mat(q_interp)
+            rx_interp, ry_interp, rz_interp = txe.mat2euler(R_interp, 'sxyz')
+
+            # IK求解
+            joints = self.world_pose_to_joints(x_interp, y_interp, z_interp,
+                                                rx_interp, ry_interp, rz_interp)
+            if joints is None:
+                self.logger.error(f'{self._tag} IK失败于插值点{i}/{num_steps}')
+                return False
+
+            # 发送关节目标
+            self._publish_shared_target(self._joint_indices, joints)
+            time.sleep(0.05)
+
+        self.logger.info(f'{self._tag} 笛卡尔插值完成')
+        return True
 
     def _sim_move_joints(self, joints) -> bool:
         """sim模式: 关节角度 → 更新共享目标数组 → /target_joints → 等待到位"""
