@@ -120,6 +120,8 @@ class ArmBridge:
             Bool, f'{prefix}rm_driver/movej_result', 10)
         self._movejp_result_pub = node.create_publisher(
             Bool, f'{prefix}rm_driver/movej_p_result', 10)
+        self._movep_result_pub = node.create_publisher(
+            Bool, f'{prefix}rm_driver/movep_result', 10)
 
         # 状态反馈
         self._arm_pos_pub = node.create_publisher(
@@ -137,6 +139,9 @@ class ArmBridge:
         self._movejp_sub = node.create_subscription(
             Movejp, f'{prefix}rm_driver/movej_p_cmd',
             self._on_movejp, 10)
+        self._movep_sub = node.create_subscription(
+            Movel, f'{prefix}rm_driver/movep_cmd',
+            self._on_movep, 10)
         self._stop_sub = node.create_subscription(
             Empty, f'{prefix}rm_driver/move_stop_cmd',
             self._on_stop, 10)
@@ -181,6 +186,10 @@ class ArmBridge:
     def _on_movejp(self, msg: Movejp):
         threading.Thread(
             target=self._exec_movejp, args=(msg,), daemon=True).start()
+
+    def _on_movep(self, msg: Movel):
+        threading.Thread(
+            target=self._exec_movep, args=(msg,), daemon=True).start()
 
     def _on_stop(self, msg: Empty):
         self.logger.warn(f'{self._tag} 收到停止命令')
@@ -274,6 +283,19 @@ class ArmBridge:
         result.data = success
         self._movejp_result_pub.publish(result)
 
+    def _exec_movep(self, msg: Movel):
+        with self._motion_lock:
+            self._stop_event.clear()
+            x, y, z, rx, ry, rz = pose_to_xyzrpy(msg.pose)
+            speed = msg.speed
+            if self.mode == 'real':
+                success = self._real_movep(x, y, z, rx, ry, rz, speed)
+            else:
+                success = self._sim_move_to_pose(x, y, z, rx, ry, rz)
+        result = Bool()
+        result.data = success
+        self._movep_result_pub.publish(result)
+
     # ─── Real 模式 ───
 
     def _real_movel(self, x, y, z, rx, ry, rz, speed) -> bool:
@@ -298,6 +320,14 @@ class ArmBridge:
         success = ret == SDKMotionResult.SUCCESS
         if not success:
             self.logger.error(f'{self._tag} Real MoveJP失败: {ret}')
+        return success
+
+    def _real_movep(self, x, y, z, rx, ry, rz, speed) -> bool:
+        self.logger.info(f'{self._tag} Real MoveP: xyz=[{x:.3f},{y:.3f},{z:.3f}] speed={speed}')
+        ret = self._sdk.movep(x, y, z, rx, ry, rz, speed)
+        success = ret == SDKMotionResult.SUCCESS
+        if not success:
+            self.logger.error(f'{self._tag} Real MoveP失败: {ret}')
         return success
 
     # ─── Sim 模式 ───
@@ -360,12 +390,16 @@ class ArmBridge:
             R_interp = txq.quat2mat(q_interp)
             rx_interp, ry_interp, rz_interp = txe.mat2euler(R_interp, 'sxyz')
 
-            # IK求解
+            # IK求解（使用上一个插值点的解作为参考）
             joints = self.world_pose_to_joints(x_interp, y_interp, z_interp,
                                                 rx_interp, ry_interp, rz_interp)
             if joints is None:
                 self.logger.error(f'{self._tag} IK失败于插值点{i}/{num_steps}')
                 return False
+
+            # 更新参考解为当前IK解，提高下一个插值点的IK成功率
+            with self._lock:
+                self._current_joints = list(joints)
 
             # 发送关节目标
             self._publish_shared_target(self._joint_indices, joints)
