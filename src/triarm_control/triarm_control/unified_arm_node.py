@@ -365,12 +365,6 @@ class ArmBridge:
         distance = math.sqrt((x_end - x_start)**2 + (y_end - y_start)**2 + (z_end - z_start)**2)
         num_steps = max(10, int(math.ceil(distance / 0.01)))
 
-        # 欧拉角转四元数
-        R_start = txe.euler2mat(rx_start, ry_start, rz_start, 'sxyz')
-        q_start = txq.mat2quat(R_start)
-        R_end = txe.euler2mat(rx_end, ry_end, rz_end, 'sxyz')
-        q_end = txq.mat2quat(R_end)
-
         self.logger.info(f'{self._tag} 笛卡尔插值: {num_steps}步, 距离={distance:.3f}m')
 
         # 逐点插值并发送
@@ -385,10 +379,10 @@ class ArmBridge:
             y_interp = y_start + t * (y_end - y_start)
             z_interp = z_start + t * (z_end - z_start)
 
-            # 姿态SLERP插值
-            q_interp = txq.slerp(q_start, q_end, t)
-            R_interp = txq.quat2mat(q_interp)
-            rx_interp, ry_interp, rz_interp = txe.mat2euler(R_interp, 'sxyz')
+            # 姿态线性插值（欧拉角）
+            rx_interp = rx_start + t * (rx_end - rx_start)
+            ry_interp = ry_start + t * (ry_end - ry_start)
+            rz_interp = rz_start + t * (rz_end - rz_start)
 
             # IK求解（使用上一个插值点的解作为参考）
             joints = self.world_pose_to_joints(x_interp, y_interp, z_interp,
