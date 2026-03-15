@@ -836,45 +836,57 @@ class UnifiedArmNode(Node):
         transforms = []
         now = self.get_clock().now().to_msg()
 
-        # A臂腕部相机：使用A臂末端位置
-        if 'arm_a' in self._bridges:
-            bridge_a = self._bridges['arm_a']
-            joints_a = [math.degrees(j) for j in bridge_a._current_joints]
-            pose_a = bridge_a._sdk._algo.forward_kinematics(joints_a)
-            if pose_a:
-                t = TransformStamped()
-                t.header.stamp = now
-                t.header.frame_id = 'platform_link'
-                t.child_frame_id = 'camera_a_link'
-                t.transform.translation.x = pose_a[0]
-                t.transform.translation.y = pose_a[1]
-                t.transform.translation.z = pose_a[2]
-                q = txq.axangle2quat([0, 0, 1], pose_a[5])
-                t.transform.rotation.x = q[1]
-                t.transform.rotation.y = q[2]
-                t.transform.rotation.z = q[3]
-                t.transform.rotation.w = q[0]
-                transforms.append(t)
+        def _append_wrist_camera_tf(arm_name: str, camera_frame: str):
+            bridge = self._bridges.get(arm_name)
+            if bridge is None:
+                return
 
-        # B臂腕部相机：使用B臂末端位置
-        if 'arm_b' in self._bridges:
-            bridge_b = self._bridges['arm_b']
-            joints_b = [math.degrees(j) for j in bridge_b._current_joints]
-            pose_b = bridge_b._sdk._algo.forward_kinematics(joints_b)
-            if pose_b:
-                t = TransformStamped()
-                t.header.stamp = now
-                t.header.frame_id = 'platform_link'
-                t.child_frame_id = 'camera_b_link'
-                t.transform.translation.x = pose_b[0]
-                t.transform.translation.y = pose_b[1]
-                t.transform.translation.z = pose_b[2]
-                q = txq.axangle2quat([0, 0, 1], pose_b[5])
-                t.transform.rotation.x = q[1]
-                t.transform.rotation.y = q[2]
-                t.transform.rotation.z = q[3]
-                t.transform.rotation.w = q[0]
-                transforms.append(t)
+            with bridge._lock:
+                pose = bridge._current_pose
+                qx = pose.orientation.x
+                qy = pose.orientation.y
+                qz = pose.orientation.z
+                qw = pose.orientation.w
+                px = pose.position.x
+                py = pose.position.y
+                pz = pose.position.z
+
+            quat_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+            if quat_norm < 1e-6:
+                return
+
+            pose_copy = Pose()
+            pose_copy.position.x = px
+            pose_copy.position.y = py
+            pose_copy.position.z = pz
+            pose_copy.orientation.x = qx
+            pose_copy.orientation.y = qy
+            pose_copy.orientation.z = qz
+            pose_copy.orientation.w = qw
+
+            x, y, z, rx, ry, rz = pose_to_xyzrpy(pose_copy)
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = 'platform_link'
+            t.child_frame_id = camera_frame
+            t.transform.translation.x = x
+            t.transform.translation.y = y
+            t.transform.translation.z = z
+            t.transform.rotation.x = qx
+            t.transform.rotation.y = qy
+            t.transform.rotation.z = qz
+            t.transform.rotation.w = qw
+            transforms.append(t)
+
+            self.get_logger().info(
+                f'[{arm_name}] 发布腕部相机TF platform_link←{camera_frame}: '
+                f'trans=[{x:.3f}, {y:.3f}, {z:.3f}], '
+                f'rpy=[{rx:.3f}, {ry:.3f}, {rz:.3f}]',
+                throttle_duration_sec=5.0)
+
+        # 腕部相机：直接复用当前末端完整姿态，避免只发布 yaw 导致坐标轴错误
+        _append_wrist_camera_tf('arm_a', 'camera_a_link')
+        _append_wrist_camera_tf('arm_b', 'camera_b_link')
 
         # Link_S6 (S臂末端全局相机) - 使用Isaac Sim实际位置
         t = TransformStamped()
