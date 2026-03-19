@@ -888,20 +888,23 @@ class UnifiedArmNode(Node):
         _append_wrist_camera_tf('arm_a', 'camera_a_link')
         _append_wrist_camera_tf('arm_b', 'camera_b_link')
 
-        # Link_S6 (S臂末端全局相机) - 使用Isaac Sim实际位置
+        # Link_S6 (S臂末端全局相机) - 使用标定验证后的实际位姿
+        # 平移: 相机在 platform_link 下的位置 (由 grasp_test 验证)
+        # 旋转: 绕固定轴 XYZ 顺序: RX=π(向下看) + RZ=π/2(相机X轴对齐)
         t = TransformStamped()
         t.header.stamp = now
         t.header.frame_id = 'platform_link'
         t.child_frame_id = 'Link_S6'
-        t.transform.translation.x = 0.40197
-        t.transform.translation.y = 0.08106
+        t.transform.translation.x = 0.40991
+        t.transform.translation.y = -0.01001
         t.transform.translation.z = 0.63422
-        # 相机向下看：绕x轴旋转180°（匹配Isaac Sim）
-        q = txq.axangle2quat([1, 0, 0], math.radians(180))
-        t.transform.rotation.x = q[1]
-        t.transform.rotation.y = q[2]
-        t.transform.rotation.z = q[3]
-        t.transform.rotation.w = q[0]
+        # 旋转: euler('sxyz', [π, 0, π/2]) — 与 grasp_test 验证一致
+        R = txe.euler2mat(math.pi, 0.0, math.pi / 2.0, 'sxyz')
+        q = txq.mat2quat(R)
+        t.transform.rotation.x = float(q[1])
+        t.transform.rotation.y = float(q[2])
+        t.transform.rotation.z = float(q[3])
+        t.transform.rotation.w = float(q[0])
         transforms.append(t)
 
         if transforms:
