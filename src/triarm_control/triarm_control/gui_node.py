@@ -20,7 +20,7 @@ try:
 except ImportError:
     HAS_TK = False
 
-from rm_ros_interfaces.msg import Movel, Movejp
+from rm_ros_interfaces.msg import Movel, Movejp, Movej
 from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
 from .realman_sdk_wrapper import RealManAlgo
