@@ -28,6 +28,7 @@ import time
 import threading
 from typing import List, Optional
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose, TransformStamped
@@ -101,6 +102,7 @@ class ArmBridge:
         self._sim_qp_max_dq = float(node.get_parameter('sim_qp_max_dq').value)
         self._sim_qp_pos_gain = float(node.get_parameter('sim_qp_pos_gain').value)
         self._sim_qp_rot_gain = float(node.get_parameter('sim_qp_rot_gain').value)
+        self._qp_prev_dq = np.zeros(6, dtype=np.float64)
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(
@@ -358,11 +360,12 @@ class ArmBridge:
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪')
             return False
-
         with self._lock:
-            q = np.array(self._current_joints, dtype=np.float64)
+            q_seed = list(self._commanded_joints)
+            if not any(abs(v) > 1e-6 for v in q_seed):
+                q_seed = list(self._current_joints)
 
-        pose_dict = self._sdk.forward_kinematics(list(q))
+        pose_dict = self._sdk.forward_kinematics(q_seed)
         if not pose_dict:
             self.logger.error(f'{self._tag} FK失败')
             return False
@@ -371,7 +374,7 @@ class ArmBridge:
         rx_start, ry_start, rz_start = float(pose_dict['rx']), float(pose_dict['ry']), float(pose_dict['rz'])
 
         distance = math.sqrt((x_end - x_start)**2 + (y_end - y_start)**2 + (z_end - z_start)**2)
-        num_steps = max(10, int(math.ceil(distance / 0.01)))
+        num_steps = max(10, int(math.ceil(distance / 0.005)))
 
         def _wrap(a):
             return (a + math.pi) % (2.0 * math.pi) - math.pi
@@ -441,12 +444,16 @@ class ArmBridge:
                 _interp_angle(ry_start, ry_end, t),
                 _interp_angle(rz_start, rz_end, t),
             ]
+            with self._lock:
+                q_meas = np.array(self._commanded_joints, dtype=np.float64)
+                if not np.any(np.isfinite(q_meas)):
+                    q_meas = np.array(self._current_joints, dtype=np.float64)
 
-            err, pR_now, _ = _pose_error(q, target)
+            err, pR_now, _ = _pose_error(q_meas, target)
             if err is None:
                 self.logger.error(f'{self._tag} FK失败于插值点{i}/{num_steps}')
                 return False
-            J = _num_jacobian(q, pR_now)
+            J = _num_jacobian(q_meas, pR_now)
             if J is None:
                 self.logger.error(f'{self._tag} 数值雅可比失败于插值点{i}/{num_steps}')
                 return False
@@ -459,10 +466,42 @@ class ArmBridge:
                 dq = np.linalg.lstsq(A, b, rcond=None)[0]
 
             dq = np.clip(dq, -self._sim_qp_max_dq, self._sim_qp_max_dq)
-            q = q + dq
-            q = np.minimum(np.maximum(q, self._joint_lower), self._joint_upper)
+            dq = 0.6 * self._qp_prev_dq + 0.4 * dq
+            self._qp_prev_dq = dq
+            q_cmd = q_meas + dq
+            q_cmd = np.minimum(np.maximum(q_cmd, self._joint_lower), self._joint_upper)
 
-            self._publish_shared_target(self._joint_indices, list(q))
+            self._publish_shared_target(self._joint_indices, list(q_cmd))
+            time.sleep(dt)
+
+        for _ in range(int(max(1.0 / max(dt, 1e-3), 1))):
+            if self._stop_event.is_set():
+                return False
+            target = [x_end, y_end, z_end, rx_end, ry_end, rz_end]
+            with self._lock:
+                q_meas = np.array(self._commanded_joints, dtype=np.float64)
+                if not np.any(np.isfinite(q_meas)):
+                    q_meas = np.array(self._current_joints, dtype=np.float64)
+            err, pR_now, _ = _pose_error(q_meas, target)
+            if err is None:
+                break
+            if float(np.linalg.norm(err[:3])) < 0.002 and float(np.linalg.norm(err[3:])) < 0.04:
+                break
+            J = _num_jacobian(q_meas, pR_now)
+            if J is None:
+                break
+            A = J.T @ J + (self._sim_qp_damping ** 2) * np.eye(6)
+            b = J.T @ err
+            try:
+                dq = np.linalg.solve(A, b)
+            except Exception:
+                dq = np.linalg.lstsq(A, b, rcond=None)[0]
+            dq = np.clip(dq, -self._sim_qp_max_dq, self._sim_qp_max_dq)
+            dq = 0.6 * self._qp_prev_dq + 0.4 * dq
+            self._qp_prev_dq = dq
+            q_cmd = q_meas + dq
+            q_cmd = np.minimum(np.maximum(q_cmd, self._joint_lower), self._joint_upper)
+            self._publish_shared_target(self._joint_indices, list(q_cmd))
             time.sleep(dt)
 
         self.logger.info(f'{self._tag} 笛卡尔插值完成')
@@ -643,11 +682,11 @@ class UnifiedArmNode(Node):
         self.declare_parameter('sim_motion_grace_period', 8.0)
         self.declare_parameter('sim_ik_method', 'qp')
         self.declare_parameter('sim_qp_dt', 0.05)
-        self.declare_parameter('sim_qp_damping', 0.12)
+        self.declare_parameter('sim_qp_damping', 0.30)
         self.declare_parameter('sim_qp_eps', 1e-4)
-        self.declare_parameter('sim_qp_max_dq', 0.08)
+        self.declare_parameter('sim_qp_max_dq', 0.03)
         self.declare_parameter('sim_qp_pos_gain', 1.0)
-        self.declare_parameter('sim_qp_rot_gain', 0.6)
+        self.declare_parameter('sim_qp_rot_gain', 0.2)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
