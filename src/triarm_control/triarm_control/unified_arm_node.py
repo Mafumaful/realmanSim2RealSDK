@@ -41,7 +41,8 @@ import transforms3d.euler as txe
 
 from .realman_sdk_wrapper import RealManSDKWrapper, SDKMotionResult
 from .joint_names import (JOINT_NAMES_LIST, TOTAL_JOINT_COUNT,
-                          ARM_JOINT_COUNT, GRIPPER_JOINT_INDICES)
+                          ARM_JOINT_COUNT, GRIPPER_JOINT_INDICES,
+                          JOINT_LIMITS)
 
 
 # 臂关节在23关节数组中的索引映射
@@ -87,9 +88,19 @@ class ArmBridge:
         self.logger = node.get_logger()
         self._tag = f'[ArmBridge:{arm_name}]'
         self._joint_indices = ARM_JOINT_INDICES.get(arm_name, [])
+        self._joint_names = [JOINT_NAMES_LIST[idx] for idx in self._joint_indices]
+        self._joint_lower = np.array([JOINT_LIMITS[n][0] for n in self._joint_names], dtype=np.float64)
+        self._joint_upper = np.array([JOINT_LIMITS[n][1] for n in self._joint_names], dtype=np.float64)
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
         self._sim_motion_grace_period = sim_motion_grace_period
+        self._sim_ik_method = node.get_parameter('sim_ik_method').value
+        self._sim_qp_dt = float(node.get_parameter('sim_qp_dt').value)
+        self._sim_qp_damping = float(node.get_parameter('sim_qp_damping').value)
+        self._sim_qp_eps = float(node.get_parameter('sim_qp_eps').value)
+        self._sim_qp_max_dq = float(node.get_parameter('sim_qp_max_dq').value)
+        self._sim_qp_pos_gain = float(node.get_parameter('sim_qp_pos_gain').value)
+        self._sim_qp_rot_gain = float(node.get_parameter('sim_qp_rot_gain').value)
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(
@@ -333,71 +344,126 @@ class ArmBridge:
     # ─── Sim 模式 ───
 
     def _sim_move_to_pose(self, x, y, z, rx, ry, rz) -> bool:
-        """sim模式: 世界坐标系Pose → RM65Robot IK → 关节角度"""
+        if self._sim_ik_method == 'qp':
+            return self._sim_movel_cartesian(x, y, z, rx, ry, rz)
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪，无法执行IK')
             return False
-
         joints = self.world_pose_to_joints(x, y, z, rx, ry, rz)
         if joints is None:
             return False
-
         return self._sim_move_joints(joints)
 
     def _sim_movel_cartesian(self, x_end, y_end, z_end, rx_end, ry_end, rz_end) -> bool:
-        """sim模式: 笛卡尔空间直线插值"""
         if not self._sdk.is_ready:
             self.logger.error(f'{self._tag} SDK未就绪')
             return False
 
-        # 获取当前位姿
         with self._lock:
-            current_joints = list(self._current_joints)
-        pose_dict = self._sdk.forward_kinematics(current_joints)
+            q = np.array(self._current_joints, dtype=np.float64)
+
+        pose_dict = self._sdk.forward_kinematics(list(q))
         if not pose_dict:
             self.logger.error(f'{self._tag} FK失败')
             return False
 
-        x_start, y_start, z_start = pose_dict['x'], pose_dict['y'], pose_dict['z']
-        rx_start, ry_start, rz_start = pose_dict['rx'], pose_dict['ry'], pose_dict['rz']
+        x_start, y_start, z_start = float(pose_dict['x']), float(pose_dict['y']), float(pose_dict['z'])
+        rx_start, ry_start, rz_start = float(pose_dict['rx']), float(pose_dict['ry']), float(pose_dict['rz'])
 
-        # 计算插值步数
         distance = math.sqrt((x_end - x_start)**2 + (y_end - y_start)**2 + (z_end - z_start)**2)
         num_steps = max(10, int(math.ceil(distance / 0.01)))
 
-        self.logger.info(f'{self._tag} 笛卡尔插值: {num_steps}步, 距离={distance:.3f}m')
+        def _wrap(a):
+            return (a + math.pi) % (2.0 * math.pi) - math.pi
 
-        # 逐点插值并发送
+        def _interp_angle(a0, a1, t):
+            return _wrap(a0 + t * _wrap(a1 - a0))
+
+        def _rotvec_from_R(R):
+            quat = txq.mat2quat(R)
+            w = float(np.clip(quat[0], -1.0, 1.0))
+            theta = 2.0 * math.acos(w)
+            if theta < 1e-9:
+                return np.zeros(3, dtype=np.float64)
+            s = math.sin(theta / 2.0)
+            if abs(s) < 1e-9:
+                return np.zeros(3, dtype=np.float64)
+            axis = np.array([quat[1], quat[2], quat[3]], dtype=np.float64) / s
+            return axis * theta
+
+        def _pose_error(q_now, target):
+            pd = self._sdk.forward_kinematics(list(q_now))
+            if not pd:
+                return None, None, None
+            p_now = np.array([pd['x'], pd['y'], pd['z']], dtype=np.float64)
+            R_now = txe.euler2mat(pd['rx'], pd['ry'], pd['rz'], 'sxyz')
+            p_t = np.array(target[:3], dtype=np.float64)
+            R_t = txe.euler2mat(target[3], target[4], target[5], 'sxyz')
+            dp = p_t - p_now
+            R_err = R_now.T @ R_t
+            dr = _rotvec_from_R(R_err)
+            e = np.concatenate([self._sim_qp_pos_gain * dp, self._sim_qp_rot_gain * dr], axis=0)
+            return e, (p_now, R_now), (p_t, R_t)
+
+        def _num_jacobian(q_now, pR_now):
+            p_now, R_now = pR_now
+            J = np.zeros((6, 6), dtype=np.float64)
+            eps = self._sim_qp_eps
+            for j in range(6):
+                q2 = q_now.copy()
+                q2[j] += eps
+                pd2 = self._sdk.forward_kinematics(list(q2))
+                if not pd2:
+                    return None
+                p2 = np.array([pd2['x'], pd2['y'], pd2['z']], dtype=np.float64)
+                R2 = txe.euler2mat(pd2['rx'], pd2['ry'], pd2['rz'], 'sxyz')
+                dp = (p2 - p_now) / eps
+                dR = R_now.T @ R2
+                dw = _rotvec_from_R(dR) / eps
+                J[:3, j] = dp
+                J[3:, j] = dw
+            return J
+
+        self.logger.info(f'{self._tag} 笛卡尔插值({self._sim_ik_method}): {num_steps}步, 距离={distance:.3f}m')
+
+        dt = self._sim_qp_dt
         for i in range(1, num_steps + 1):
             if self._stop_event.is_set():
                 self.logger.warn(f'{self._tag} 运动被取消')
                 return False
 
             t = i / num_steps
-            # 位置线性插值
-            x_interp = x_start + t * (x_end - x_start)
-            y_interp = y_start + t * (y_end - y_start)
-            z_interp = z_start + t * (z_end - z_start)
+            target = [
+                x_start + t * (x_end - x_start),
+                y_start + t * (y_end - y_start),
+                z_start + t * (z_end - z_start),
+                _interp_angle(rx_start, rx_end, t),
+                _interp_angle(ry_start, ry_end, t),
+                _interp_angle(rz_start, rz_end, t),
+            ]
 
-            # 姿态线性插值（欧拉角）
-            rx_interp = rx_start + t * (rx_end - rx_start)
-            ry_interp = ry_start + t * (ry_end - ry_start)
-            rz_interp = rz_start + t * (rz_end - rz_start)
-
-            # IK求解（使用上一个插值点的解作为参考）
-            joints = self.world_pose_to_joints(x_interp, y_interp, z_interp,
-                                                rx_interp, ry_interp, rz_interp)
-            if joints is None:
-                self.logger.error(f'{self._tag} IK失败于插值点{i}/{num_steps}')
+            err, pR_now, _ = _pose_error(q, target)
+            if err is None:
+                self.logger.error(f'{self._tag} FK失败于插值点{i}/{num_steps}')
+                return False
+            J = _num_jacobian(q, pR_now)
+            if J is None:
+                self.logger.error(f'{self._tag} 数值雅可比失败于插值点{i}/{num_steps}')
                 return False
 
-            # 更新参考解为当前IK解，提高下一个插值点的IK成功率
-            with self._lock:
-                self._current_joints = list(joints)
+            A = J.T @ J + (self._sim_qp_damping ** 2) * np.eye(6)
+            b = J.T @ err
+            try:
+                dq = np.linalg.solve(A, b)
+            except Exception:
+                dq = np.linalg.lstsq(A, b, rcond=None)[0]
 
-            # 发送关节目标
-            self._publish_shared_target(self._joint_indices, joints)
-            time.sleep(0.05)
+            dq = np.clip(dq, -self._sim_qp_max_dq, self._sim_qp_max_dq)
+            q = q + dq
+            q = np.minimum(np.maximum(q, self._joint_lower), self._joint_upper)
+
+            self._publish_shared_target(self._joint_indices, list(q))
+            time.sleep(dt)
 
         self.logger.info(f'{self._tag} 笛卡尔插值完成')
         return True
@@ -575,6 +641,13 @@ class UnifiedArmNode(Node):
         self.declare_parameter('sim_joint_tolerance', 0.03)
         self.declare_parameter('sim_motion_timeout', 40.0)
         self.declare_parameter('sim_motion_grace_period', 8.0)
+        self.declare_parameter('sim_ik_method', 'qp')
+        self.declare_parameter('sim_qp_dt', 0.05)
+        self.declare_parameter('sim_qp_damping', 0.12)
+        self.declare_parameter('sim_qp_eps', 1e-4)
+        self.declare_parameter('sim_qp_max_dq', 0.08)
+        self.declare_parameter('sim_qp_pos_gain', 1.0)
+        self.declare_parameter('sim_qp_rot_gain', 0.6)
 
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
@@ -898,8 +971,8 @@ class UnifiedArmNode(Node):
         t.transform.translation.x = 0.40991
         t.transform.translation.y = -0.01001
         t.transform.translation.z = 0.63422
-        # 旋转: euler('sxyz', [π, 0, π/2]) — 与 grasp_test 验证一致
-        R = txe.euler2mat(math.pi, 0.0, math.pi / 2.0, 'sxyz')
+        # 旋转: euler('sxyz', [π, 0, -π/2]) — 与 grasp_test 验证一致
+        R = txe.euler2mat(math.pi, 0.0, -math.pi / 2.0, 'sxyz')
         q = txq.mat2quat(R)
         t.transform.rotation.x = float(q[1])
         t.transform.rotation.y = float(q[2])
