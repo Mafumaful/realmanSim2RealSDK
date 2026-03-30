@@ -318,14 +318,17 @@ class JointControlGUI(Node):
         current_frame = ttk.LabelFrame(frame, text='当前位姿', padding=10)
         current_frame.grid(row=6, column=0, columnspan=6, pady=10, padx=10, sticky='ew')
 
+        # anchor='w' 左对齐 + width 固定字符宽度，防止浮点数值变化导致标签宽度抖动
         self.current_pose_label = ttk.Label(
             current_frame,
-            text='base:  X=-, Y=-, Z=- | RX=-, RY=-, RZ=- \n'
-                 'World: X=-, Y=-, Z=- | RX=-, RY=-, RZ=- ',
+            text='base:  X= -.---- , Y= -.---- , Z= -.----  (m) | RX= ---.-, RY= ---.-, RZ= ---.- (°)\n'
+                 'World: X= -.---- , Y= -.---- , Z= -.----  (m) | RX= ---.-, RY= ---.-, RZ= ---.- (°)',
             font=('Courier', 10),
-            justify='left'
+            justify='left',
+            anchor='w',
+            width=90,
         )
-        self.current_pose_label.pack()
+        self.current_pose_label.pack(fill='x')
 
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
@@ -372,14 +375,18 @@ class JointControlGUI(Node):
     def _add_joint_row(self, parent, row, label, min_val, max_val, idx):
         ttk.Label(parent, text=label, width=6).grid(row=row, column=0, padx=2, pady=2)
 
-        # 实时值
-        rt_label = ttk.Label(parent, text='--', width=8, foreground='blue')
-        rt_label.grid(row=row, column=1, padx=2, pady=2)
+        # 固定列宽（minsize），防止数据长度变化引起列宽抖动
+        parent.columnconfigure(1, minsize=80)
+        parent.columnconfigure(2, minsize=80)
+
+        # 实时值：anchor='e' 右对齐，内容变化时不会引起列宽变化
+        rt_label = ttk.Label(parent, text='   --  ', width=8, foreground='blue', anchor='e')
+        rt_label.grid(row=row, column=1, padx=2, pady=2, sticky='ew')
         self.realtime_labels.append((idx, rt_label))
 
-        # 指令值
-        cmd_label = ttk.Label(parent, text='--', width=8, foreground='green')
-        cmd_label.grid(row=row, column=2, padx=2, pady=2)
+        # 指令值：anchor='e' 右对齐
+        cmd_label = ttk.Label(parent, text='   --  ', width=8, foreground='green', anchor='e')
+        cmd_label.grid(row=row, column=2, padx=2, pady=2, sticky='ew')
         self.cmd_labels.append((idx, cmd_label))
 
         # 滑块
@@ -429,7 +436,8 @@ class JointControlGUI(Node):
 
     def _update_realtime_labels(self):
         for idx, label in self.realtime_labels:
-            label.config(text=f'{math.degrees(self.current_positions[idx]):.1f}°')
+            # 用固定宽度格式化（共7字符 + °），防止字符串长度变化引起列宽抖动
+            label.config(text=f'{math.degrees(self.current_positions[idx]):>7.1f}°')
 
     def _update_current_pose_display(self):
         """更新当前位姿显示（base_link + Isaac Sim World）"""
@@ -465,10 +473,14 @@ class JointControlGUI(Node):
                 wx, wy, wz, wo_deg = self._calc_isaac_world_pose(
                     arm, joints_deg, d1_deg)
 
-                text = (f'base:  X={pos[0]:.4f}, Y={pos[1]:.4f}, Z={pos[2]:.4f} (m) '
-                       f'| RX={ori_deg[0]:.1f}, RY={ori_deg[1]:.1f}, RZ={ori_deg[2]:.1f} (°) \n'
-                       f'World: X={wx:.4f}, Y={wy:.4f}, Z={wz:.4f} (m) '
-                       f'| RX={wo_deg[0]:.1f}, RY={wo_deg[1]:.1f}, RZ={wo_deg[2]:.1f} (°)')
+                # 固定字段宽度格式化：X/Y/Z 用 8.4f（含符号共8字符），角度用 6.1f（含符号共6字符）
+                # 这样每帧文本长度恒定，标签不会因内容变化而重排布局
+                text = (
+                    f'base:  X={pos[0]:8.4f}, Y={pos[1]:8.4f}, Z={pos[2]:8.4f} (m) '
+                    f'| RX={ori_deg[0]:6.1f}, RY={ori_deg[1]:6.1f}, RZ={ori_deg[2]:6.1f} (°)\n'
+                    f'World: X={wx:8.4f}, Y={wy:8.4f}, Z={wz:8.4f} (m) '
+                    f'| RX={wo_deg[0]:6.1f}, RY={wo_deg[1]:6.1f}, RZ={wo_deg[2]:6.1f} (°)'
+                )
 
                 self.current_pose_label.config(text=text)
         except Exception as e:
@@ -542,7 +554,8 @@ class JointControlGUI(Node):
 
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:
-            label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
+            # 用固定宽度格式化（共7字符 + °），防止字符串长度变化引起列宽抖动
+            label.config(text=f'{math.degrees(self.cmd_positions[idx]):>7.1f}°')
 
     def _sync_sliders_to_cmd(self):
         """将滑块和输入框同步到当前指令值 (仅同步机械臂关节, 跳过夹爪 index 19-22)"""
