@@ -34,6 +34,7 @@ setup(
             'gui = triarm_control.gui_node:main',
             'unified_arm = triarm_control.unified_arm_node:main',
             'gripper_bridge = triarm_control.gripper_bridge:main',
+            'tf_publisher = triarm_control.tf_publisher_node:main',
         ],
     },
 )

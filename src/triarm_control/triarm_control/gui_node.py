@@ -41,10 +41,12 @@ class JointControlGUI(Node):
         # per-arm base 参数 (与 unified_arm_node 一致, 用于 RM65Robot IK/FK)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_a.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_a.real_d6_mm', 144.0)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 172.5)
+        self.declare_parameter('arm_b.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_b.real_d6_mm', 144.0)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
@@ -130,12 +132,11 @@ class JointControlGUI(Node):
         for arm in ['arm_a', 'arm_b']:
             bp = list(self.get_parameter(f'{arm}.base_position').value)
             bo = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
-            d6 = self.get_parameter(f'{arm}.d6_mm').value
+            d6_key = f'{arm}.sim_d6_mm' if self.mode == 'sim' else f'{arm}.real_d6_mm'
+            d6 = self.get_parameter(d6_key).value
             algo = RealManAlgo(base_position=bp, base_orientation_deg=bo, d6_mm=d6)
             algo.initialize()
             self._algos[arm] = algo
-        # 默认引用 (向后兼容其他使用 pos2matrix/matrix2pos 的地方)
-        self._algo = self._algos['arm_a']
 
         # GUI组件
         self.entries = []
@@ -308,7 +309,6 @@ class JointControlGUI(Node):
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveP', command=lambda: self._send_world_pose('movep')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
-        ttk.Button(btn_frame, text='直接执行(基座系)', command=self._send_base_pose).pack(side='left', padx=10)
 
         # 状态标签
         self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
@@ -840,7 +840,7 @@ class JointControlGUI(Node):
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
-        algo = self._algos.get(arm, self._algo)
+        algo = self._algos[arm]
 
         # 从ROS参数获取base变换 (平台到臂基座)
         base_pos = list(self.get_parameter(f'{arm}.base_position').value)
@@ -872,27 +872,6 @@ class JointControlGUI(Node):
             return None
 
         return list(pose_W_T)
-
-    def _send_base_pose(self):
-        """直接发送臂基座坐标系位姿 (跳过世界坐标变换)"""
-        try:
-            vals = [float(e.get()) for e in self.world_pose_entries]
-            speed = int(self.move_speed_entry.get())
-        except ValueError:
-            self.world_pose_status.config(text='输入无效', foreground='red')
-            return
-        arm = self.target_arm_var.get()
-        # 直接用SDK的movej_p，不经过坐标变换
-        from std_msgs.msg import Float64MultiArray
-        # 发布到专用话题，让unified_arm_node直接执行IK
-        if not hasattr(self, 'base_pose_pub'):
-            self.base_pose_pub = self.create_publisher(
-                Float64MultiArray, f'{arm}/base_pose_cmd', 10)
-        msg = Float64MultiArray()
-        msg.data = vals + [float(speed)]
-        self.base_pose_pub.publish(msg)
-        self.world_pose_status.config(text='已发送(基座系)', foreground='orange')
-        self._last_target_pose = vals
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""

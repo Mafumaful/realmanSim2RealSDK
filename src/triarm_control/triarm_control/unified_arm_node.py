@@ -30,11 +30,10 @@ from typing import List, Optional
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose, TransformStamped
+from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
-from tf2_ros import TransformBroadcaster
 
 import transforms3d.quaternions as txq
 import transforms3d.euler as txe
@@ -568,8 +567,6 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_a.port', 8080)
         self.declare_parameter('arm_b.ip', '192.168.1.19')
         self.declare_parameter('arm_b.port', 8080)
-        self.declare_parameter('arm_s.ip', '192.168.1.20')
-        self.declare_parameter('arm_s.port', 8080)
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.03)
@@ -579,13 +576,12 @@ class UnifiedArmNode(Node):
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_a.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_a.real_d6_mm', 144.0)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 172.5)
-        self.declare_parameter('arm_s.base_position', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.base_orientation_deg', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.d6_mm', 172.5)
+        self.declare_parameter('arm_b.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_b.real_d6_mm', 144.0)
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
@@ -646,10 +642,11 @@ class UnifiedArmNode(Node):
             port = self.get_parameter(f'{arm_name}.port').value
             arm_id = arm_name[-1].upper()
 
-            # 获取 base 参数
+            # 获取 base 参数，按 mode 选择对应的 d6_mm
             base_position = list(self.get_parameter(f'{arm_name}.base_position').value)
             base_orientation_deg = list(self.get_parameter(f'{arm_name}.base_orientation_deg').value)
-            d6_mm = self.get_parameter(f'{arm_name}.d6_mm').value
+            d6_key = f'{arm_name}.sim_d6_mm' if mode == 'sim' else f'{arm_name}.real_d6_mm'
+            d6_mm = self.get_parameter(d6_key).value
 
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
@@ -683,10 +680,6 @@ class UnifiedArmNode(Node):
             self._init_timer = self.create_timer(0.5, self._publish_initial_zero_position)
         else:
             self._init_timer = None
-
-        # TF发布器：动态发布平台和相机TF
-        self._tf_broadcaster = TransformBroadcaster(self)
-        self._publish_base_tfs()  # 发布基础静态TF
 
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
 
@@ -821,95 +814,6 @@ class UnifiedArmNode(Node):
             self._init_timer.cancel()
             self._init_timer = None
 
-    def _publish_base_tfs(self):
-        """发布基础静态TF：base_link → platform_link"""
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = 'base_link'
-        t.child_frame_id = 'platform_link'
-        t.transform.translation.z = 0.05
-        t.transform.rotation.w = 1.0
-        self._tf_broadcaster.sendTransform(t)
-
-    def _publish_camera_tfs(self):
-        """根据当前关节状态发布相机TF（动态更新）"""
-        transforms = []
-        now = self.get_clock().now().to_msg()
-
-        def _append_wrist_camera_tf(arm_name: str, camera_frame: str):
-            bridge = self._bridges.get(arm_name)
-            if bridge is None:
-                return
-
-            with bridge._lock:
-                pose = bridge._current_pose
-                qx = pose.orientation.x
-                qy = pose.orientation.y
-                qz = pose.orientation.z
-                qw = pose.orientation.w
-                px = pose.position.x
-                py = pose.position.y
-                pz = pose.position.z
-
-            quat_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-            if quat_norm < 1e-6:
-                return
-
-            pose_copy = Pose()
-            pose_copy.position.x = px
-            pose_copy.position.y = py
-            pose_copy.position.z = pz
-            pose_copy.orientation.x = qx
-            pose_copy.orientation.y = qy
-            pose_copy.orientation.z = qz
-            pose_copy.orientation.w = qw
-
-            x, y, z, rx, ry, rz = pose_to_xyzrpy(pose_copy)
-            t = TransformStamped()
-            t.header.stamp = now
-            t.header.frame_id = 'platform_link'
-            t.child_frame_id = camera_frame
-            t.transform.translation.x = x
-            t.transform.translation.y = y
-            t.transform.translation.z = z
-            t.transform.rotation.x = qx
-            t.transform.rotation.y = qy
-            t.transform.rotation.z = qz
-            t.transform.rotation.w = qw
-            transforms.append(t)
-
-            self.get_logger().info(
-                f'[{arm_name}] 发布腕部相机TF platform_link←{camera_frame}: '
-                f'trans=[{x:.3f}, {y:.3f}, {z:.3f}], '
-                f'rpy=[{rx:.3f}, {ry:.3f}, {rz:.3f}]',
-                throttle_duration_sec=5.0)
-
-        # 腕部相机：直接复用当前末端完整姿态，避免只发布 yaw 导致坐标轴错误
-        _append_wrist_camera_tf('arm_a', 'camera_a_link')
-        _append_wrist_camera_tf('arm_b', 'camera_b_link')
-
-        # Link_S6 (S臂末端全局相机) - 使用标定验证后的实际位姿
-        # 平移: 相机在 platform_link 下的位置 (由 grasp_test 验证)
-        # 旋转: 绕固定轴 XYZ 顺序: RX=π(向下看) + RZ=π/2(相机X轴对齐)
-        t = TransformStamped()
-        t.header.stamp = now
-        t.header.frame_id = 'platform_link'
-        t.child_frame_id = 'Link_S6'
-        t.transform.translation.x = 0.40991
-        t.transform.translation.y = -0.01001
-        t.transform.translation.z = 0.63422
-        # 旋转: euler('sxyz', [π, 0, π/2]) — 与 grasp_test 验证一致
-        R = txe.euler2mat(math.pi, 0.0, math.pi / 2.0, 'sxyz')
-        q = txq.mat2quat(R)
-        t.transform.rotation.x = float(q[1])
-        t.transform.rotation.y = float(q[2])
-        t.transform.rotation.z = float(q[3])
-        t.transform.rotation.w = float(q[0])
-        transforms.append(t)
-
-        if transforms:
-            self._tf_broadcaster.sendTransform(transforms)
-
     def _publish_states(self):
         for bridge in self._bridges.values():
             bridge.publish_state()
@@ -932,9 +836,6 @@ class UnifiedArmNode(Node):
             js_msg.name = JOINT_NAMES_LIST
             js_msg.position = merged_positions
             self._merged_joint_states_pub.publish(js_msg)
-
-        # 动态发布相机TF
-        self._publish_camera_tfs()
 
     def destroy_node(self):
         for bridge in self._bridges.values():

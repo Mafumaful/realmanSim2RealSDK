@@ -1,65 +1,133 @@
 # 三臂机器人控制配置
 
+# ============================================================
+# 全局共享参数（所有节点均可读取，节点内同名参数可覆盖）
+#
+# 坐标变换格式 xyzrpy: [x, y, z, roll, pitch, yaw]
+#   xyz 单位: 米(m)
+#   rpy 单位: 度(deg)，固定轴 XYZ 顺序
+# ============================================================
+/**:
+  ros__parameters:
+    namespace: "robot"    # 话题命名空间
+    mode: "sim"           # 运行模式: sim / real
+
+    # A/B 臂 RM65Robot IK/FK 参数（tf_publisher / unified_arm / gui 共用）
+    # 这里存放 sim 模式默认值；real 模式若有差异，在 unified_arm_node 中覆盖
+    arm_a:
+      base_position:        [0.05457, -0.04863, 0.2273]   # 机械臂base相对转盘位置 (m)
+      base_orientation_deg: [45.0, 90.0, 0.0]             # 机械臂base相对转盘姿态 (ZYX欧拉角, deg)
+      sim_d6_mm:  172.5    # 仿真末端 d6 参数 (mm)，RM65-6F + Isaac Sim 模型
+      real_d6_mm: 144.0    # 实物末端 d6 参数 (mm)，RM65-6F 实际安装长度
+    arm_b:
+      base_position:        [-0.04867, -0.05374, 0.2273]
+      base_orientation_deg: [135.0, 90.0, 0.0]
+      sim_d6_mm:  172.5
+      real_d6_mm: 144.0
+
+# ============================================================
+# TF 发布节点
+# ============================================================
+tf_publisher_node:
+  ros__parameters:
+    publish_rate: 20.0    # TF 发布频率 (Hz)
+
+    # ── 静态变换 ──
+    static_transforms:
+      base_to_platform:       # base_link → platform_link
+        parent: "base_link"
+        child:  "platform_link"
+        xyzrpy: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+      platform_to_s6_camera:  # 顶部全局相机（经标定验证）
+        parent: "platform_link"
+        child:  "Link_S6"
+        xyzrpy: [0.40991, -0.01001, 0.63422, 180.0, 0.0, 90.0]
+
+    # ── 转盘（D1）：由 joint_platform_D1 关节角驱动，绕 Z 轴旋转 ──
+    turntable:
+      parent: "platform_link"
+      child:  "turntable_link"
+      axis_sign: -1   # 1=同向, -1=反向（D1 轴方向与 TF Rz 的符号关系）
+
+    # ── 机械臂安装偏移（turntable_link → arm_x_base_link）──
+    # sim/real 分别配置，运行时按 mode 参数选择
+    arm_bases:
+      arm_a:
+        parent: "turntable_link"
+        child:  "arm_a_base_link"
+        sim:
+          xyzrpy: [0.05457, -0.04863, 0.2273, 45.0, 90.0, 0.0]
+        real:
+          xyzrpy: [0.05457, -0.04863, 0.2273, 45.0, 90.0, 0.0]
+      arm_b:
+        parent: "turntable_link"
+        child:  "arm_b_base_link"
+        sim:
+          xyzrpy: [-0.04867, -0.05374, 0.2273, 135.0, 90.0, 0.0]
+        real:
+          xyzrpy: [-0.04867, -0.05374, 0.2273, 135.0, 90.0, 0.0]
+
+    # ── 腕部相机（由各臂 FK 实时计算，platform_link → camera_x_link）──
+    wrist_cameras:
+      arm_a:
+        parent: "platform_link"
+        child:  "camera_a_link"
+      arm_b:
+        parent: "platform_link"
+        child:  "camera_b_link"
+
+# ============================================================
+# 关节插值控制节点
+# ============================================================
 triarm_controller:
   ros__parameters:
-    namespace: "robot"
-    joint_velocity: 30.0    # 关节运动速度 (度/秒)
+    joint_velocity: 30.0    # 关节运动速度 (deg/s)
     publish_rate: 50.0      # 指令发布频率 (Hz)
     enable_smooth: true     # 是否启用平滑处理
-    acceleration: 100.0     # 加速度限制 (度/秒²)
-    velocity_mode: "normal" # 速度模式: slow, normal, fast
-    # 夹爪参数 (sim/real 分开配置, 单位: 度)
-    left_gripper:
-      sim_open_angle: 0.0       # sim 打开角度
-      sim_close_angle: -30.0    # sim 闭合角度
-      real_open_angle: 0.0      # real 打开角度
-      real_close_angle: -30.0   # real 闭合角度
+    acceleration: 100.0     # 加速度限制 (deg/s²)
+    velocity_mode: "normal" # 速度模式: slow / normal / fast
+    left_gripper:           # 夹爪角度 (deg)，sim/real 分开配置
+      sim_open_angle:   0.0
+      sim_close_angle: -30.0
+      real_open_angle:  0.0
+      real_close_angle: -30.0
     right_gripper:
-      sim_open_angle: 0.0       # sim 打开角度
-      sim_close_angle: -30.0    # sim 闭合角度
-      real_open_angle: 0.0      # real 打开角度
-      real_close_angle: -30.0   # real 闭合角度
+      sim_open_angle:   0.0
+      sim_close_angle: -30.0
+      real_open_angle:  0.0
+      real_close_angle: -30.0
 
-# 统一机械臂节点配置
+# ============================================================
+# 统一机械臂节点
+# ============================================================
 unified_arm_node:
   ros__parameters:
-    namespace: "robot"
-    publish_rate: 20.0      # 状态发布频率 (Hz)
-    sim_joint_tolerance: 0.02   # sim运动完成检测阈值 (弧度)
-    sim_motion_timeout: 40.0    # sim主等待超时 (秒)
-    sim_motion_grace_period: 8.0   # 主超时后额外收敛等待 (秒)
-    # A臂 (left)
+    publish_rate: 20.0          # 状态发布频率 (Hz)
+    sim_joint_tolerance: 0.02   # sim 运动完成检测阈值 (rad)
+    sim_motion_timeout: 40.0    # sim 主等待超时 (s)
+    sim_motion_grace_period: 8.0  # 主超时后额外收敛等待 (s)
     arm_a:
-      ip: "192.168.30.124"
+      ip:   "192.168.30.124"
       port: 8080
-      # RM65Robot IK/FK 参数 (单位: m, deg)
-      base_position: [0.05457, -0.04863, 0.2273]           # 机械臂base相对转盘的位置
-      base_orientation_deg: [45.0, 90.0, 0.0]              # 机械臂base相对转盘的姿态 (ZYX欧拉角)
-      d6_mm: 172.5                                          # 末端 d6 参数 (RM65-6F)
-    # B臂 (right)
+      # base_position / base_orientation_deg / d6_mm 继承自 /**
     arm_b:
-      ip: "192.168.30.123"
+      ip:   "192.168.30.123"
       port: 8080
-      # RM65Robot IK/FK 参数 (单位: m, deg)
-      base_position: [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]
-      d6_mm: 172.5
-    # S臂 (预留)
-    arm_s:
-      ip: "192.168.1.20"
+      # base_position / base_orientation_deg / d6_mm 继承自 /**
+    arm_s:                      # S臂（预留，TODO: 根据实际布局调整）
+      ip:   "192.168.1.20"
       port: 8080
-      # RM65Robot IK/FK 参数 (单位: m, deg)
-      # TODO: 根据实际机械臂布局调整以下参数
-      base_position: [0.0, 0.0, 0.0]
+      base_position:        [0.0, 0.0, 0.0]
       base_orientation_deg: [0.0, 0.0, 0.0]
-      d6_mm: 172.5
+      sim_d6_mm:  172.5
+      real_d6_mm: 144.0
 
-# 夹爪桥接节点配置
+# ============================================================
+# 夹爪桥接节点
+# ============================================================
 gripper_bridge_node:
   ros__parameters:
-    namespace: "robot"
-    # real 模式: Modbus RTU 串口配置 (crt_ctag2f90c)
-    gripper_a:
+    gripper_a:              # real 模式: Modbus RTU 串口配置
       serial_port: "/dev/ttyUSB0"
       baud_rate: 115200
       slave_addr: 1
@@ -67,20 +135,13 @@ gripper_bridge_node:
       serial_port: "/dev/ttyUSB1"
       baud_rate: 115200
       slave_addr: 1
-    # real 模式: Modbus 运动完成等待超时 (秒)
-    motion_timeout: 5.0
+    motion_timeout: 5.0     # Modbus 运动完成等待超时 (s)
 
+# ============================================================
+# GUI 节点
+# ============================================================
 triarm_gui:
   ros__parameters:
-    namespace: "robot"
-    gui_width: 700
+    gui_width:  700
     gui_height: 600
-    # per-arm base 参数 (与 unified_arm_node 一致, 用于 GUI 内 FK/IK 计算)
-    arm_a:
-      base_position: [0.05457, -0.04863, 0.2273]
-      base_orientation_deg: [45.0, 90.0, 0.0]
-      d6_mm: 172.5
-    arm_b:
-      base_position: [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]
-      d6_mm: 172.5
+    # arm_a / arm_b FK 参数继承自 /**

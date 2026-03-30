@@ -75,16 +75,16 @@ def generate_launch_description():
         }]
     )
 
-    # 机器人 TF 发布器：由 unified_arm_node 直接发布动态TF，不再使用 robot_state_publisher
-    # robot_state_publisher_node = Node(
-    #     package='robot_state_publisher',
-    #     executable='robot_state_publisher',
-    #     name='triarm_robot_state_publisher',
-    #     parameters=[{'robot_description': robot_description}],
-    #     remappings=[
-    #         ('joint_states', ['/', LaunchConfiguration('namespace'), '/joint_states']),
-    #     ]
-    # )
+    # TF 发布节点（统一管理所有坐标变换，替代 unified_arm_node 中分散的 TF 发布）
+    tf_publisher_node = Node(
+        package='triarm_control',
+        executable='tf_publisher',
+        name='tf_publisher_node',
+        parameters=[config_file, {
+            'mode': LaunchConfiguration('mode'),
+            'namespace': LaunchConfiguration('namespace'),
+        }]
+    )
 
     # GUI节点（可选）
     gui_node = Node(
@@ -107,6 +107,6 @@ def generate_launch_description():
         controller_node,
         unified_arm_node,
         gripper_bridge_node,
-        # robot_state_publisher_node,  # 已由 unified_arm_node 接管TF发布
+        tf_publisher_node,
         gui_node,
     ])

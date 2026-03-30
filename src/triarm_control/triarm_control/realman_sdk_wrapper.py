@@ -32,16 +32,14 @@ import numpy as np
 class SDKMotionResult(Enum):
     SUCCESS = 0
     FAILED = 1
-    TIMEOUT = 2
     NOT_CONNECTED = 3
-    IK_FAILED = 4
 
 class RealManAlgo:
     """RealMan 算法库封装 - 使用 RM65Robot 进行 IK/FK 解算
 
     基于 rm65_robot.RM65Robot，支持自定义 base 坐标系，
     纯本地计算，不需要TCP连接。
-    同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos/pose_move）。
+    同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos）。
     """
 
     def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=172.5):
@@ -201,22 +199,6 @@ class RealManAlgo:
                 return None
             except Exception as e:
                 print(f'[Algo] matrix2pos异常: {e}')
-                return None
-
-    def pose_move(self, pose: List[float], delta: List[float], mode: int = 1) -> Optional[List[float]]:
-        """位姿叠加 (delta角度单位为度)
-
-        使用原始 SDK Algo 实现"""
-        if not self._initialized or not self._algo:
-            return None
-        with self._lock:
-            try:
-                result = self._algo.rm_algo_pose_move(pose, delta, mode)
-                if isinstance(result, (list, tuple)) and result[0] == 0:
-                    return list(result[1])
-                return None
-            except Exception as e:
-                print(f'[Algo] pose_move异常: {e}')
                 return None
 
     def forward_kinematics(
@@ -389,25 +371,6 @@ class RealManSDKWrapper:
         except Exception as e:
             print(f'{self._tag} TCP连接异常: {e}')
             return False
-
-    def set_arm_run_mode(self, sim: bool = True) -> bool:
-        """设置机械臂运行模式 (需要TCP连接)
-        Args:
-            sim: True=仿真模式(rm_set_arm_run_mode(1)),
-                 False=真实模式(rm_set_arm_run_mode(0))
-        """
-        if not self._tcp_connected:
-            return False
-        with self._lock:
-            try:
-                mode_val = 1 if sim else 0
-                ret = self._robot.rm_set_arm_run_mode(mode_val)
-                print(f'{self._tag} 设置运行模式: '
-                      f'{"仿真" if sim else "真实"}, ret={ret}')
-                return ret == 0
-            except Exception as e:
-                print(f'{self._tag} 设置运行模式失败: {e}')
-                return False
 
     # ─── IK/FK (通过SDK Algo解算) ───
 
