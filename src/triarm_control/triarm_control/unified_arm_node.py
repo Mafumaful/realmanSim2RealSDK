@@ -315,7 +315,7 @@ class ArmBridge:
         return success
 
     def _real_movejp(self, x, y, z, rx, ry, rz, speed) -> bool:
-        self.logger.info(f'{self._tag} Real MoveJP: xyz=[{x:.3f},{y:.3f},{z:.3f}] speed={speed}')
+        self.logger.info(f'{self._tag}==========v2==================== Real MoveJP: xyz=[{x:.3f},{y:.3f},{z:.3f}] speed={speed}')
         ret = self._sdk.movej_p(x, y, z, rx, ry, rz, speed)
         success = ret == SDKMotionResult.SUCCESS
         if not success:
