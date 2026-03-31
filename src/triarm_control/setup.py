@@ -16,10 +16,11 @@ setup(
             glob('launch/*.py')),
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'urdf'),
+            glob('urdf/*')),
     ],
     install_requires=[
         'setuptools',
-        'transforms3d',
         'minimalmodbus',
     ],
     zip_safe=True,

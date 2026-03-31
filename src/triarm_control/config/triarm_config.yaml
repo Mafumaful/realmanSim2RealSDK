@@ -32,16 +32,16 @@ tf_publisher_node:
   ros__parameters:
     publish_rate: 20.0    # TF 发布频率 (Hz)
 
+    # ── 是否同时向 robot_state_publisher 发布关节状态（用于 RViz2 URDF 可视化）──
+    publish_robot_model: false
+
     # ── 静态变换 ──
     static_transforms:
       base_to_platform:       # base_link → platform_link
         parent: "base_link"
         child:  "platform_link"
         xyzrpy: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
-      platform_to_s6_camera:  # 顶部全局相机（经标定验证）
-        parent: "platform_link"
-        child:  "Link_S6"
-        xyzrpy: [0.40991, -0.01001, 0.63422, 180.0, 0.0, 90.0]
+      # 注意：中间相机不再使用静态 TF，改为订阅 /center_camera/pose 动态绑定
 
     # ── 转盘（D1）：由 joint_platform_D1 关节角驱动，绕 Z 轴旋转 ──
     turntable:
@@ -67,14 +67,21 @@ tf_publisher_node:
         real:
           xyzrpy: [-0.04867, -0.05374, 0.2273, 135.0, 90.0, 0.0]
 
-    # ── 腕部相机（由各臂 FK 实时计算，platform_link → camera_x_link）──
+    # ── 腕部相机配置 ──
+    # 相机挂在机械臂末端 arm_x_link_6 上，end_to_camera 为末端→相机的静态偏移
     wrist_cameras:
       arm_a:
-        parent: "platform_link"
-        child:  "camera_a_link"
+        child:  "camera_a_link"   # parent 由代码自动设为 arm_a_link_6
+        end_to_camera_xyzrpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: 根据实际标定填写
       arm_b:
-        parent: "platform_link"
-        child:  "camera_b_link"
+        child:  "camera_b_link"   # parent 由代码自动设为 arm_b_link_6
+        end_to_camera_xyzrpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: 根据实际标定填写
+
+    # ── 中间相机（静态变换，相对 turntable_link 固定不动）──
+    center_camera:
+      parent: "turntable_link"
+      child:  "center_camera_link"
+      xyzrpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: 根据实际标定填写
 
 # ============================================================
 # 关节插值控制节点
