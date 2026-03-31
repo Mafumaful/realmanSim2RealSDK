@@ -21,7 +21,7 @@ class RM65Robot:
         self,
         base_position=None,
         base_orientation_deg=None,
-        d6_mm=172.5,
+        d6_mm=144,
     ):
         """
         初始化 RM65 机械臂
@@ -30,7 +30,7 @@ class RM65Robot:
         ----
         base_position        : [x, y, z] 单位 m，机械臂base相对转盘的位置，默认 [0, 0, 0]
         base_orientation_deg : [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态，默认 [0, 0, 0]
-        d6_mm                : 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+        d6_mm                : 末端 d6 参数，单位 mm，默认 144 (RM65-6F)
 
         注：base_position 和 base_orientation_deg 是机械臂base相对转盘的固定位姿
         """

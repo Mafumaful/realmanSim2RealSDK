@@ -11,7 +11,7 @@ RealMan RM65 官方SDK封装 - 模式感知统一接口
       ip, port, arm_id, mode='sim',
       base_position=[x, y, z],
       base_orientation_deg=[rx, ry, rz],
-      d6_mm=172.5
+      d6_mm=144
   )
   sdk.connect()          # 内部根据 mode 自动初始化
   sdk.inverse_kinematics(...)  # 使用 RM65Robot 进行 IK 解算
@@ -44,14 +44,14 @@ class RealManAlgo:
     同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos/pose_move）。
     """
 
-    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=172.5):
+    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=144):
         """
         初始化算法库
 
         Args:
             base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
             base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
-            d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+            d6_mm: 末端 d6 参数，单位 mm，默认 144 (RM65-6F)
         """
         self._robot = None  # RM65Robot 实例（用于 IK/FK）
         self._algo = None   # 原始 SDK Algo 实例（用于辅助功能）
@@ -267,7 +267,7 @@ class RealManSDKWrapper:
                  mode: str = 'real', algo: RealManAlgo = None,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 172.5):
+                 d6_mm: float = 144):
         """
         Args:
             ip: 机械臂IP地址
@@ -277,7 +277,7 @@ class RealManSDKWrapper:
             algo: 共享的Algo实例 (可选，不传则内部创建)
             base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
             base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
-            d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+            d6_mm: 末端 d6 参数，单位 mm，默认 144 (RM65-6F)
         """
         self._ip = ip
         self._port = port

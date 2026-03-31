@@ -30,20 +30,20 @@ unified_arm_node:
     sim_motion_grace_period: 8.0   # 主超时后额外收敛等待 (秒)
     # A臂 (left)
     arm_a:
-      ip: "192.168.30.124"
-      port: 8080
-      # RM65Robot IK/FK 参数 (单位: m, deg)
-      base_position: [0.05457, -0.04863, 0.2273]           # 机械臂base相对转盘的位置
-      base_orientation_deg: [45.0, 90.0, 0.0]              # 机械臂base相对转盘的姿态 (ZYX欧拉角)
-      d6_mm: 172.5                                          # 末端 d6 参数 (RM65-6F)
-    # B臂 (right)
-    arm_b:
       ip: "192.168.30.123"
       port: 8080
       # RM65Robot IK/FK 参数 (单位: m, deg)
-      base_position: [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]
-      d6_mm: 172.5
+      base_position: [0.05457, 0.04863, 0.2273]           # 机械臂base相对转盘的位置
+      base_orientation_deg: [45.0, 0.0, 0.0]              # 机械臂base相对转盘的姿态 (ZYX欧拉角)
+      d6_mm: 144                                          # 末端 d6 参数 (RM65-6F)
+    # B臂 (right)
+    arm_b:
+      ip: "192.168.30.124"
+      port: 8080
+      # RM65Robot IK/FK 参数 (单位: m, deg)
+      base_position: [0.05457, -0.04863, 0.2273]
+      base_orientation_deg: [-45.0, 0.0, 0.0]
+      d6_mm: 144
     # S臂 (预留)
     arm_s:
       ip: "192.168.1.20"
@@ -52,7 +52,7 @@ unified_arm_node:
       # TODO: 根据实际机械臂布局调整以下参数
       base_position: [0.0, 0.0, 0.0]
       base_orientation_deg: [0.0, 0.0, 0.0]
-      d6_mm: 172.5
+      d6_mm: 144
 
 # 夹爪桥接节点配置
 gripper_bridge_node:
@@ -60,11 +60,11 @@ gripper_bridge_node:
     namespace: "robot"
     # real 模式: Modbus RTU 串口配置 (crt_ctag2f90c)
     gripper_a:
-      serial_port: "/dev/ttyUSB0"
+      serial_port: "/dev/ttyCH341USB0"
       baud_rate: 115200
       slave_addr: 1
     gripper_b:
-      serial_port: "/dev/ttyUSB1"
+      serial_port: "/dev/ttyCH341USB1"
       baud_rate: 115200
       slave_addr: 1
     # real 模式: Modbus 运动完成等待超时 (秒)
@@ -77,10 +77,11 @@ triarm_gui:
     gui_height: 600
     # per-arm base 参数 (与 unified_arm_node 一致, 用于 GUI 内 FK/IK 计算)
     arm_a:
-      base_position: [0.05457, -0.04863, 0.2273]
-      base_orientation_deg: [45.0, 90.0, 0.0]
-      d6_mm: 172.5
+      base_position: [0.05457, 0.04863, 0.2273] 
+      base_orientation_deg: [45.0, 0.0, 0.0]  
+      d6_mm: 144
     arm_b:
-      base_position: [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]
-      d6_mm: 172.5
+      base_position: [0.05457, -0.04863, 0.2273]
+      base_orientation_deg: [-45.0, 0.0, 0.0]
+      d6_mm: 144
+

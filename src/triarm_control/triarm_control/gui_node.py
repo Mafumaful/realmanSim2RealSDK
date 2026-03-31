@@ -24,13 +24,15 @@ from rm_ros_interfaces.msg import Movel, Movejp, Movej
 from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
 from .realman_sdk_wrapper import RealManAlgo
-
+from .griger import jiazhua_control_l, jiazhua_control_r
 
 class JointControlGUI(Node):
     """关节控制GUI节点"""
 
     def __init__(self):
         super().__init__('triarm_gui')
+
+        self.isRuning=0
 
         # 声明参数
         self.declare_parameter('namespace', 'robot')
@@ -41,10 +43,10 @@ class JointControlGUI(Node):
         # per-arm base 参数 (与 unified_arm_node 一致, 用于 RM65Robot IK/FK)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_a.d6_mm', 144)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 172.5)
+        self.declare_parameter('arm_b.d6_mm', 144)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
@@ -169,11 +171,41 @@ class JointControlGUI(Node):
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(fill='x', padx=5, pady=5)
 
+        joint_sequence1 = [
+            # [0, 0, 0, 0, 0, 0], # 零位
+            [-55, 49, 34.7, 34, -62, 0], # 准备位2
+            [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+            [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+        ]
+
+        joint_sequence2 = [
+            # [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+            [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+            [-55, 49, 34.7, 34, -62, 0], # 准备位2
+            # [0, 0, 0, 0, 0, 0], # 零位
+        ]
+
         # 左侧：执行和归零按钮
         ttk.Button(btn_frame, text='执行',
                    command=self._send_target).pack(side='left', padx=5)
         ttk.Button(btn_frame, text='归零',
                    command=self._reset_all).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='抓取',
+        #     command=lambda: self._send_target_demo(joint_sequence1)).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='复位',
+        #     command=lambda: self._send_target_demo(joint_sequence2)).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='抓',
+        #     command=lambda: self.close_gripper_right()).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='放',
+        #     command=lambda: self.open_gripper_right()).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='左臂演示',
+        #     command=lambda: self._send_target_demo_jicheng_left(joint_sequence2)).pack(side='left', padx=5)
+        # ttk.Button(btn_frame, text='右臂演示',
+        #     command=lambda: self._send_target_demo_jicheng_right(joint_sequence2)).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text='开始演示',
+            command=lambda: self._send_target_demo_jicheng_start(joint_sequence2)).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text='暂停',
+            command=lambda: self._send_target_demo_jicheng_pause(joint_sequence2)).pack(side='left', padx=5)
 
         # 中间：平滑处理勾选框
         self.smooth_var = tk.BooleanVar(value=True)
@@ -584,6 +616,312 @@ class JointControlGUI(Node):
             msg_b.speed = 20
             self.movej_pub_b.publish(msg_b)
             self.status_label.config(text='已发送(Real)', foreground='green')
+
+    def close_gripper_right(self):
+        jiazhua_control_r(0)
+
+    def open_gripper_right(self):
+        jiazhua_control_r(1)
+
+    def close_gripper_left(self):
+        jiazhua_control_l(0)
+
+    def open_gripper_left(self):
+        jiazhua_control_l(1)
+
+    def _send_target_demo(self, joint_sequence=None):
+        # if not self.has_state:
+        #     self.status_label.config(text='等待数据...', foreground='red')
+        #     return
+
+        if joint_sequence is None:
+            # 默认序列
+            # joint_sequence = [
+            #     [0, 0, 0, 0, 0, 0], # 零位
+            #     [-55, 49, 34.7, 34, -62, 0], # 准备位2
+            #     [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+            #     [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+            # ]
+            return
+
+        targets = [0.0] * TOTAL_JOINT_COUNT
+        # for idx, entry, min_val, max_val in self.entries:
+        #     try:
+        #         val = float(entry.get())
+        #         val = max(min_val, min(max_val, val))
+        #         targets[idx] = val
+        #     except ValueError:
+        #         pass
+
+        # Real模式：直接发送rm_driver指令
+        # A臂 (index 1-6) 将角度值转换为弧度值
+        for jnts_deg in joint_sequence: 
+            msg_a = Movej()
+            msg_a.joint = [math.radians(x) for x in jnts_deg]
+            msg_a.speed = 20
+            self.movej_pub_a.publish(msg_a)
+            time.sleep(2.4)
+        # B臂 (index 7-12)
+        # msg_b = Movej()
+        # msg_b.joint = [math.radians(targets[i]) for i in range(7, 13)]
+        # msg_b.speed = 20
+        # self.movej_pub_b.publish(msg_b)
+        self.status_label.config(text='已发送(Real)', foreground='green')
+        
+    def _send_target_demo_jicheng_left(self, joint_sequence2=None):
+        print('11111111111111')
+        # if not self.has_state:
+        #     self.status_label.config(text='等待数据...', foreground='red')
+        #     return
+
+        # if joint_sequence is None:
+        #     # 默认序列
+        #     # joint_sequence = [
+        #     #     [0, 0, 0, 0, 0, 0], # 零位
+        #     #     [-55, 49, 34.7, 34, -62, 0], # 准备位2
+        #     #     [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+        #     #     [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+        #     # ]
+        #     return
+        self.open_gripper_left()
+
+        joint_sequence1 = [
+            [0, 0, 0, 0, 0, 0], # 零位
+            [53.2, 45.1, 45.7, -27.7, -74.8, 0], # 准备位2
+            [52.8, -1, 117.4, -109.6, -99.7, 10.9], # 准备位2
+            [74.8, 44.8, 98.4, -98.8, -98.7, -6.8], # 准备位1
+            [92.4, 43, 94.8, -86.1, -87.1, -2.9], # 抓取位
+        ]
+
+        joint_sequence2 = [
+            [92.4, 43, 94.8, -86.1, -87.1, -2.9], # 抓取位
+            [74.8, 44.8, 98.4, -98.8, -98.7, -6.8], # 准备位1
+            [52.8, -1, 117.4, -109.6, -99.7, 10.9], # 准备位2
+            [53.2, 45.1, 45.7, -27.7, -74.8, 0], # 准备位2
+            [0, 0, 0, 0, 0, 0], # 零位
+        ]
+
+        targets = [0.0] * TOTAL_JOINT_COUNT
+        # for idx, entry, min_val, max_val in self.entries:
+        #     try:
+        #         val = float(entry.get())
+        #         val = max(min_val, min(max_val, val))
+        #         targets[idx] = val
+        #     except ValueError:
+        #         pass
+
+        speed=85
+        joint_sleep=1.1
+        wait_sleep=1.1
+        # Real模式：直接发送rm_driver指令
+        # A臂 (index 1-6) 将角度值转换为弧度值
+        for jnts_deg in joint_sequence1: 
+            msg_a = Movej()
+            msg_a.joint = [math.radians(x) for x in jnts_deg]
+            msg_a.speed = speed
+            self.movej_pub_b.publish(msg_a)
+            time.sleep(joint_sleep)
+        
+        time.sleep(wait_sleep)
+        self.close_gripper_left()
+        time.sleep(wait_sleep)
+
+        # for jnts_deg in joint_sequence2:
+        for i, jnts_deg in enumerate(joint_sequence2):
+            if(i+1<len(joint_sequence2)):
+                msg_a = Movej()
+                msg_a.joint = [math.radians(x) for x in jnts_deg]
+                msg_a.speed = speed
+                self.movej_pub_b.publish(msg_a)
+                time.sleep(joint_sleep)
+        
+        # 另一个臂
+        
+
+        # B臂 (index 7-12)
+        # msg_b = Movej()
+        # msg_b.joint = [math.radians(targets[i]) for i in range(7, 13)]
+        # msg_b.speed = 20
+        # self.movej_pub_b.publish(msg_b)
+        time.sleep(wait_sleep)
+
+        for i,jnts_deg in enumerate(joint_sequence1):
+            if(i>0): 
+                msg_a = Movej()
+                msg_a.joint = [math.radians(x) for x in jnts_deg]
+                msg_a.speed = speed
+                self.movej_pub_b.publish(msg_a)
+                time.sleep(joint_sleep)
+        
+        time.sleep(wait_sleep)
+        self.open_gripper_left()
+        time.sleep(wait_sleep)
+
+        for jnts_deg in joint_sequence2: 
+            msg_a = Movej()
+            msg_a.joint = [math.radians(x) for x in jnts_deg]
+            msg_a.speed = speed
+            self.movej_pub_b.publish(msg_a)
+            time.sleep(joint_sleep)
+
+        self.status_label.config(text='已发送(Real)', foreground='green')
+        
+                
+    # def _send_target_demo_jicheng_all(self, joint_sequence2=None):
+    #     if self.isRuning!=0:
+    #         self.isRuning=2
+
+    # def _send_target_demo_jicheng_all(self, joint_sequence2=None):
+    #     if self.isRuning==1 :
+    #         self.isRuning=2
+    #         return
+    #     if self.isRuning==2:
+    #         self.isRuning=3
+    #         return
+    #     if self.isRuning==3:
+    #         return
+    #     self.isRuning=3
+    #     while self.isRuning==3:
+    #         self._send_target_demo_jicheng_left(joint_sequence2)
+    #         self._send_target_demo_jicheng_right(joint_sequence2)
+
+    def _send_target_demo_jicheng_pause(self, joint_sequence2=None):
+        self.isRuning=0
+           # 等待线程结束
+        if hasattr(self, '_demo_thread') and self._demo_thread.is_alive():
+            self._demo_thread.join(timeout=1.0)  # 最多等待1秒
+            if self._demo_thread.is_alive():
+                print("警告：线程未正常终止")
+
+    def _send_target_demo_jicheng_start(self, joint_sequence2=None):
+        if self.isRuning==1:
+            return
+        self.isRuning=1
+
+            # 创建并启动线程
+        self._demo_thread = threading.Thread(
+            target=self._demo_worker,
+            args=(joint_sequence2,),
+            daemon=True  # 设为守护线程，主程序退出时会自动结束
+        )
+        self._demo_thread.start()
+
+        # while self.isRuning:
+        #     self._send_target_demo_jicheng_left(joint_sequence2)
+        #     self._send_target_demo_jicheng_right(joint_sequence2)
+        
+
+    def _demo_worker(self, joint_sequence2):
+        """ 在单独线程中运行的演示工作函数 """
+        while self.isRuning:
+            # 注意：这里只能执行非GUI操作
+            # 如果需要更新GUI，必须通过队列或after方法回到主线程
+            
+            # 假设这两个方法不涉及GUI操作
+            self._send_target_demo_jicheng_left(joint_sequence2)
+            self._send_target_demo_jicheng_right(joint_sequence2)
+            
+            time.sleep(0.1)  # 控制循环速度
+
+    def _send_target_demo_jicheng_right(self, joint_sequence2=None):
+        print('2222222222222')
+        # if not self.has_state:
+        #     self.status_label.config(text='等待数据...', foreground='red')
+        #     return
+
+        # if joint_sequence is None:
+        #     # 默认序列
+        #     # joint_sequence = [
+        #     #     [0, 0, 0, 0, 0, 0], # 零位
+        #     #     [-55, 49, 34.7, 34, -62, 0], # 准备位2
+        #     #     [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+        #     #     [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+        #     # ]
+        #     return
+        self.open_gripper_right()
+
+        joint_sequence1 = [
+            [0, 0, 0, 0, 0, 0], # 零位
+            [-55, 49, 34.7, 34, -62, 0], # 准备位2
+            [-47.2, 21.3, 107.9, 113.9, -106.2, 0], # 准备位2
+            [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+            [-92.4, 54.2, 88.2, 86.5, -92.3, 0], # 抓取位
+        ]
+
+        joint_sequence2 = [
+            # [-91.9, 54.2, 88.2, 88.4, -92.6, 0], # 抓取位
+            [-62.8, 47.1, 84, 113.9, -113.1, 0], # 准备位1
+            [-47.2, 21.3, 107.9, 113.9, -106.2, 0], # 准备位2
+            [-55, 49, 34.7, 34, -62, 0], # 准备位2
+            [0, 0, 0, 0, 0, 0], # 零位
+        ]
+
+        targets = [0.0] * TOTAL_JOINT_COUNT
+        # for idx, entry, min_val, max_val in self.entries:
+        #     try:
+        #         val = float(entry.get())
+        #         val = max(min_val, min(max_val, val))
+        #         targets[idx] = val
+        #     except ValueError:
+        #         pass
+
+        speed=85
+        joint_sleep=1.1
+        wait_sleep=1.1
+        # Real模式：直接发送rm_driver指令
+        # A臂 (index 1-6) 将角度值转换为弧度值
+        for jnts_deg in joint_sequence1: 
+            msg_a = Movej()
+            msg_a.joint = [math.radians(x) for x in jnts_deg]
+            msg_a.speed = speed
+            self.movej_pub_a.publish(msg_a)
+            time.sleep(joint_sleep)
+        
+        time.sleep(wait_sleep)
+        self.close_gripper_right()
+        time.sleep(wait_sleep)
+
+        for idx,jnts_deg in enumerate(joint_sequence2):
+            if(idx+1<len(joint_sequence2)):
+                msg_a = Movej()
+                msg_a.joint = [math.radians(x) for x in jnts_deg]
+                msg_a.speed = speed
+                self.movej_pub_a.publish(msg_a)
+                time.sleep(joint_sleep)
+        
+        # 另一个臂
+        
+
+        # B臂 (index 7-12)
+        # msg_b = Movej()
+        # msg_b.joint = [math.radians(targets[i]) for i in range(7, 13)]
+        # msg_b.speed = 20
+        # self.movej_pub_b.publish(msg_b)
+        time.sleep(wait_sleep)
+
+        for idx,jnts_deg in enumerate(joint_sequence1): 
+            if(idx>0):
+                msg_a = Movej()
+                msg_a.joint = [math.radians(x) for x in jnts_deg]
+                msg_a.speed = speed
+                self.movej_pub_a.publish(msg_a)
+                time.sleep(joint_sleep)
+        
+        time.sleep(wait_sleep)
+        self.open_gripper_right()
+        time.sleep(wait_sleep)
+
+        for jnts_deg in joint_sequence2: 
+            msg_a = Movej()
+            msg_a.joint = [math.radians(x) for x in jnts_deg]
+            msg_a.speed = speed
+            self.movej_pub_a.publish(msg_a)
+            time.sleep(joint_sleep)
+
+        self.status_label.config(text='已发送(Real)', foreground='green')
+        
+        
+
 
     def _reset_all(self):
         for idx, entry, _, _ in self.entries:

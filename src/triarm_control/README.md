@@ -448,10 +448,10 @@ triarm_control/
 | `arm_a.port` / `arm_b.port` | `8080` | 臂端口 (real) |
 | `arm_a.base_position` | `[0.05457, -0.04863, 0.2273]` | A 臂 base 相对转盘位置 [x,y,z] (m) |
 | `arm_a.base_orientation_deg` | `[45.0, 90.0, 0.0]` | A 臂 base 相对转盘姿态 [rx,ry,rz] ZYX (deg) |
-| `arm_a.d6_mm` | `172.5` | A 臂末端 d6 参数 (mm) |
+| `arm_a.d6_mm` | `144` | A 臂末端 d6 参数 (mm) |
 | `arm_b.base_position` | `[0.0, 0.0, 0.0]` | B 臂 base 参数 (待校准) |
 | `arm_b.base_orientation_deg` | `[0.0, 0.0, 0.0]` | B 臂 base 参数 (待校准) |
-| `arm_b.d6_mm` | `172.5` | B 臂末端 d6 参数 (mm) |
+| `arm_b.d6_mm` | `144` | B 臂末端 d6 参数 (mm) |
 
 ### gripper_bridge_node
 

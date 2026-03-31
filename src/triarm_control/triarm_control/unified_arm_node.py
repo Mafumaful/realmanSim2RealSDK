@@ -80,7 +80,7 @@ class ArmBridge:
                  sim_motion_grace_period: float = 8.0,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 172.5):
+                 d6_mm: float = 144):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -579,13 +579,13 @@ class UnifiedArmNode(Node):
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 172.5)
+        self.declare_parameter('arm_a.d6_mm', 144)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 172.5)
+        self.declare_parameter('arm_b.d6_mm', 144)
         self.declare_parameter('arm_s.base_position', [0.0, 0.0, 0.0])
         self.declare_parameter('arm_s.base_orientation_deg', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.d6_mm', 172.5)
+        self.declare_parameter('arm_s.d6_mm', 144)
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
@@ -878,11 +878,11 @@ class UnifiedArmNode(Node):
             t.transform.rotation.w = qw
             transforms.append(t)
 
-            self.get_logger().info(
-                f'[{arm_name}] 发布腕部相机TF platform_link←{camera_frame}: '
-                f'trans=[{x:.3f}, {y:.3f}, {z:.3f}], '
-                f'rpy=[{rx:.3f}, {ry:.3f}, {rz:.3f}]',
-                throttle_duration_sec=5.0)
+            # self.get_logger().info(
+            #     f'[{arm_name}] 发布腕部相机TF platform_link←{camera_frame}: '
+            #     f'trans=[{x:.3f}, {y:.3f}, {z:.3f}], '
+            #     f'rpy=[{rx:.3f}, {ry:.3f}, {rz:.3f}]',
+            #     throttle_duration_sec=5.0)
 
         # 腕部相机：直接复用当前末端完整姿态，避免只发布 yaw 导致坐标轴错误
         _append_wrist_camera_tf('arm_a', 'camera_a_link')
