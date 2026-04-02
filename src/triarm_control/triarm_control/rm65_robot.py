@@ -29,10 +29,12 @@ class RM65Robot:
         参数
         ----
         base_position        : [x, y, z] 单位 m，机械臂base相对转盘的位置，默认 [0, 0, 0]
-        base_orientation_deg : [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态，默认 [0, 0, 0]
+        base_orientation_deg : [roll_x, pitch_y, yaw_z] 固定轴 XYZ 外旋欧拉角，单位 deg
+                               描述机械臂base相对转盘的姿态，默认 [0, 0, 0]
+                               旋转矩阵 = Rz(yaw) @ Ry(pitch) @ Rx(roll)
         d6_mm                : 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
 
-        注：base_position 和 base_orientation_deg 是机械臂base相对转盘的固定位姿
+        注：base_position 和 base_orientation_deg 是机械臂base相对转盘的固定安装位姿
         """
         self.base_position = base_position or [0.0, 0.0, 0.0]
         self.base_orientation_deg = base_orientation_deg or [0.0, 0.0, 0.0]
@@ -192,21 +194,36 @@ class RM65Robot:
         ])
 
     def _build_base_transform(self):
-        """构建 base 坐标系的齐次变换矩阵"""
+        """构建 base 坐标系的齐次变换矩阵（相对转盘）
+
+        base_orientation_deg 为固定轴 XYZ 外旋欧拉角 [roll_x, pitch_y, yaw_z]，
+        与 config 中的定义完全对应，R = Rz @ Ry @ Rx。
+        """
         T = np.eye(4)
-        T[0:3, 0:3] = self._euler_zyx_to_mat(*self.base_orientation_deg)
+        roll_x, pitch_y, yaw_z = self.base_orientation_deg
+        T[0:3, 0:3] = self._euler_zyx_to_mat(roll_x, pitch_y, yaw_z)
         T[0:3, 3] = self.base_position
         return T
 
-    def _euler_zyx_to_mat(self, rx_d, ry_d, rz_d):
-        """ZYX欧拉角(deg) → 旋转矩阵"""
-        rx, ry, rz = math.radians(rx_d), math.radians(ry_d), math.radians(rz_d)
-        Rz = np.array([[math.cos(rz),-math.sin(rz),0],
-                       [math.sin(rz), math.cos(rz),0],[0,0,1]])
-        Ry = np.array([[math.cos(ry),0,math.sin(ry)],
-                       [0,1,0],[-math.sin(ry),0,math.cos(ry)]])
-        Rx = np.array([[1,0,0],[0,math.cos(rx),-math.sin(rx)],
-                       [0,math.sin(rx),math.cos(rx)]])
+    def _euler_zyx_to_mat(self, roll_x_deg, pitch_y_deg, yaw_z_deg):
+        """固定轴 XYZ 外旋欧拉角(deg) → 旋转矩阵
+
+        参数顺序：[roll_x, pitch_y, yaw_z]（与 config base_orientation_deg 完全对应）
+        旋转矩阵：R = Rz(yaw_z) @ Ry(pitch_y) @ Rx(roll_x)
+        即先绕固定 X 轴转 roll，再绕固定 Y 轴转 pitch，最后绕固定 Z 轴转 yaw。
+        """
+        rx = math.radians(roll_x_deg)
+        ry = math.radians(pitch_y_deg)
+        rz = math.radians(yaw_z_deg)
+        Rz = np.array([[math.cos(rz), -math.sin(rz), 0],
+                       [math.sin(rz),  math.cos(rz), 0],
+                       [0,             0,             1]])
+        Ry = np.array([[ math.cos(ry), 0, math.sin(ry)],
+                       [ 0,            1, 0            ],
+                       [-math.sin(ry), 0, math.cos(ry)]])
+        Rx = np.array([[1, 0,            0           ],
+                       [0, math.cos(rx), -math.sin(rx)],
+                       [0, math.sin(rx),  math.cos(rx)]])
         return Rz @ Ry @ Rx
 
     def _rot_to_euler_zyx(self, R):
@@ -223,12 +240,16 @@ class RM65Robot:
         return rx, ry, rz
 
     def _pose_to_transform(self, pose):
-        """位姿 [x,y,z,rx,ry,rz] → 齐次变换矩阵（角度单位 rad）"""
+        """位姿 [x,y,z,rx,ry,rz] → 齐次变换矩阵
+
+        pose 姿态单位为 rad，按固定轴 XYZ 外旋顺序 [roll_x, pitch_y, yaw_z] 解释，
+        与 _euler_zyx_to_mat 约定完全一致。
+        """
         T = np.eye(4)
         T[0:3, 0:3] = self._euler_zyx_to_mat(
-            math.degrees(pose[3]),
-            math.degrees(pose[4]),
-            math.degrees(pose[5])
+            math.degrees(pose[3]),   # roll_x
+            math.degrees(pose[4]),   # pitch_y
+            math.degrees(pose[5]),   # yaw_z
         )
         T[0:3, 3] = pose[0:3]
         return T

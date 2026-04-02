@@ -3,9 +3,11 @@
 # ============================================================
 # 全局共享参数（所有节点均可读取，节点内同名参数可覆盖）
 #
-# 坐标变换格式 xyzrpy: [x, y, z, roll, pitch, yaw]
+# 欧拉角约定（全文统一）：
+#   所有 xyzrpy / base_orientation_deg 均为固定轴 XYZ 外旋顺序：
+#     [roll_x, pitch_y, yaw_z]，单位 deg
+#     旋转矩阵 R = Rz(yaw_z) @ Ry(pitch_y) @ Rx(roll_x)
 #   xyz 单位: 米(m)
-#   rpy 单位: 度(deg)，固定轴 XYZ 顺序
 # ============================================================
 /**:
   ros__parameters:
@@ -13,17 +15,30 @@
     mode: "sim"           # 运行模式: sim / real
 
     # A/B 臂 RM65Robot IK/FK 参数（tf_publisher / unified_arm / gui 共用）
-    # 这里存放 sim 模式默认值；real 模式若有差异，在 unified_arm_node 中覆盖
     arm_a:
-      base_position:        [0.05457, -0.04863, 0.2273]   # 机械臂base相对转盘位置 (m)
-      base_orientation_deg: [45.0, 90.0, 0.0]             # 机械臂base相对转盘姿态 (ZYX欧拉角, deg)
+      base_position:        [0.05457, -0.04863, 0.2273]  # 机械臂base相对转盘位置 (m)
+      base_orientation_deg: [45.0, 90.0, 0.0]            # [roll_x, pitch_y, yaw_z] 固定轴XYZ外旋 (deg)
       sim_d6_mm:  172.5    # 仿真末端 d6 参数 (mm)，RM65-6F + Isaac Sim 模型
       real_d6_mm: 144.0    # 实物末端 d6 参数 (mm)，RM65-6F 实际安装长度
+      tool_frame:           # 工具坐标系（TCP 相对末端法兰的偏移）
+        name: "gripper_a"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [x,y,z(m), roll_x,pitch_y,yaw_z(rad)]，TODO: 标定后填写
+        payload: 0.0                              # 工具负载质量 (kg)
+        cx: 0.0                                   # 工具质心 X (m)
+        cy: 0.0                                   # 工具质心 Y (m)
+        cz: 0.0                                   # 工具质心 Z (m)
     arm_b:
       base_position:        [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]
+      base_orientation_deg: [135.0, 90.0, 0.0]           # [roll_x, pitch_y, yaw_z] 固定轴XYZ外旋 (deg)
       sim_d6_mm:  172.5
       real_d6_mm: 144.0
+      tool_frame:
+        name: "gripper_b"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # TODO: 标定后填写
+        payload: 0.0
+        cx: 0.0
+        cy: 0.0
+        cz: 0.0
 
 # ============================================================
 # TF 发布节点
@@ -48,24 +63,6 @@ tf_publisher_node:
       parent: "platform_link"
       child:  "turntable_link"
       axis_sign: -1   # 1=同向, -1=反向（D1 轴方向与 TF Rz 的符号关系）
-
-    # ── 机械臂安装偏移（turntable_link → arm_x_base_link）──
-    # sim/real 分别配置，运行时按 mode 参数选择
-    arm_bases:
-      arm_a:
-        parent: "turntable_link"
-        child:  "arm_a_base_link"
-        sim:
-          xyzrpy: [0.05457, -0.04863, 0.2273, 45.0, 90.0, 0.0]
-        real:
-          xyzrpy: [0.05457, -0.04863, 0.2273, 45.0, 90.0, 0.0]
-      arm_b:
-        parent: "turntable_link"
-        child:  "arm_b_base_link"
-        sim:
-          xyzrpy: [-0.04867, -0.05374, 0.2273, 135.0, 90.0, 0.0]
-        real:
-          xyzrpy: [-0.04867, -0.05374, 0.2273, 135.0, 90.0, 0.0]
 
     # ── 腕部相机配置 ──
     # 相机挂在机械臂末端 arm_x_link_6 上，end_to_camera 为末端→相机的静态偏移

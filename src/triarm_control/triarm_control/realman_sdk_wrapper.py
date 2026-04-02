@@ -42,7 +42,8 @@ class RealManAlgo:
     同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos）。
     """
 
-    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=172.5):
+    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=172.5,
+                 tool_frame=None):
         """
         初始化算法库
 
@@ -50,6 +51,8 @@ class RealManAlgo:
             base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
             base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
             d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+            tool_frame: 工具坐标系配置 dict，键：name, pose, payload, cx, cy, cz
+                        pose 单位 [x,y,z(m), rx,ry,rz(rad)]；None 则不设置（保持法兰中心）
         """
         self._robot = None  # RM65Robot 实例（用于 IK/FK）
         self._algo = None   # 原始 SDK Algo 实例（用于辅助功能）
@@ -58,6 +61,7 @@ class RealManAlgo:
         self._base_position = base_position or [0.0, 0.0, 0.0]
         self._base_orientation_deg = base_orientation_deg or [0.0, 0.0, 0.0]
         self._d6_mm = d6_mm
+        self._tool_frame = tool_frame  # dict or None
 
     def initialize(self) -> bool:
         """初始化算法库"""
@@ -72,6 +76,9 @@ class RealManAlgo:
                 d6_mm=self._d6_mm,
             )
             print(f'[Algo] RM65Robot 初始化成功, base_pos={self._base_position}, base_ori={self._base_orientation_deg}')
+
+            # 设置工具坐标系（在 IK/FK 生效前必须调用）
+            self._apply_tool_frame()
 
             # 初始化原始 SDK Algo (用于辅助功能)
             try:
@@ -96,6 +103,26 @@ class RealManAlgo:
         except Exception as e:
             print(f'[Algo] 初始化失败: {e}')
             return False
+
+    def _apply_tool_frame(self):
+        """将 tool_frame 配置注入 RM65Robot 内部的 SDK Algo 实例"""
+        if not self._tool_frame or not self._robot:
+            return
+        try:
+            from Robotic_Arm.rm_robot_interface import rm_frame_t
+            tf = self._tool_frame
+            name    = tf.get('name', '')
+            pose    = list(tf.get('pose', [0.0] * 6))
+            payload = float(tf.get('payload', 0.0))
+            cx      = float(tf.get('cx', 0.0))
+            cy      = float(tf.get('cy', 0.0))
+            cz      = float(tf.get('cz', 0.0))
+            frame = rm_frame_t(name, pose, payload, cx, cy, cz)
+            self._robot._algo.rm_algo_set_toolframe(frame)
+            print(f'[Algo] 工具坐标系已设置: name="{name}" pose={pose} '
+                  f'payload={payload}kg 质心=[{cx},{cy},{cz}]')
+        except Exception as e:
+            print(f'[Algo] 工具坐标系设置失败: {e}')
 
     @property
     def is_ready(self) -> bool:
@@ -249,7 +276,8 @@ class RealManSDKWrapper:
                  mode: str = 'real', algo: RealManAlgo = None,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 172.5):
+                 d6_mm: float = 172.5,
+                 tool_frame: dict = None):
         """
         Args:
             ip: 机械臂IP地址
@@ -260,6 +288,8 @@ class RealManSDKWrapper:
             base_position: [x, y, z] 单位 m，机械臂base相对转盘的位置
             base_orientation_deg: [rx, ry, rz] ZYX欧拉角，单位 deg，机械臂base相对转盘的姿态
             d6_mm: 末端 d6 参数，单位 mm，默认 172.5 (RM65-6F)
+            tool_frame: 工具坐标系配置 dict，键：name, pose, payload, cx, cy, cz
+                        None 则保持法兰中心为 TCP
         """
         self._ip = ip
         self._port = port
@@ -271,14 +301,15 @@ class RealManSDKWrapper:
         self._robot = None
         self._tcp_connected = False
 
-        # Algo: 如果未传入则创建新实例（使用 base 参数）
+        # Algo: 如果未传入则创建新实例（使用 base 参数 + 工具坐标系）
         if algo is not None:
             self._algo = algo
         else:
             self._algo = RealManAlgo(
                 base_position=base_position,
                 base_orientation_deg=base_orientation_deg,
-                d6_mm=d6_mm
+                d6_mm=d6_mm,
+                tool_frame=tool_frame,
             )
 
     @property

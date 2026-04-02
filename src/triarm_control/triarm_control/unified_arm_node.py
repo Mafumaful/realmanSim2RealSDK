@@ -79,7 +79,8 @@ class ArmBridge:
                  sim_motion_grace_period: float = 8.0,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 172.5):
+                 d6_mm: float = 172.5,
+                 tool_frame: dict = None):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode
@@ -95,7 +96,8 @@ class ArmBridge:
             ip, port, arm_id, mode=mode,
             base_position=base_position,
             base_orientation_deg=base_orientation_deg,
-            d6_mm=d6_mm)
+            d6_mm=d6_mm,
+            tool_frame=tool_frame)
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
@@ -583,6 +585,15 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_b.sim_d6_mm', 172.5)
         self.declare_parameter('arm_b.real_d6_mm', 144.0)
 
+        # 工具坐标系参数 (tool_frame，继承自 /**，sim/real 共用同一套)
+        for arm in ['arm_a', 'arm_b']:
+            self.declare_parameter(f'{arm}.tool_frame.name', '')
+            self.declare_parameter(f'{arm}.tool_frame.pose', [0.0] * 6)
+            self.declare_parameter(f'{arm}.tool_frame.payload', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cx', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cy', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cz', 0.0)
+
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value
         rate = self.get_parameter('publish_rate').value
@@ -648,6 +659,16 @@ class UnifiedArmNode(Node):
             d6_key = f'{arm_name}.sim_d6_mm' if mode == 'sim' else f'{arm_name}.real_d6_mm'
             d6_mm = self.get_parameter(d6_key).value
 
+            # 读取工具坐标系参数并组装为 dict
+            tool_frame = {
+                'name':    self.get_parameter(f'{arm_name}.tool_frame.name').value,
+                'pose':    list(self.get_parameter(f'{arm_name}.tool_frame.pose').value),
+                'payload': self.get_parameter(f'{arm_name}.tool_frame.payload').value,
+                'cx':      self.get_parameter(f'{arm_name}.tool_frame.cx').value,
+                'cy':      self.get_parameter(f'{arm_name}.tool_frame.cy').value,
+                'cz':      self.get_parameter(f'{arm_name}.tool_frame.cz').value,
+            }
+
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
                 sim_joint_tol=self._sim_joint_tol,
@@ -655,7 +676,8 @@ class UnifiedArmNode(Node):
                 sim_motion_grace_period=self._sim_motion_grace_period,
                 base_position=base_position,
                 base_orientation_deg=base_orientation_deg,
-                d6_mm=d6_mm)
+                d6_mm=d6_mm,
+                tool_frame=tool_frame)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
                 bridge.set_d1_angle_fn(self._get_current_d1)

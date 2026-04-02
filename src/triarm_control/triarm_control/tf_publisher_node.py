@@ -3,25 +3,31 @@
 TF 发布节点 — 统一管理所有坐标变换
 
 TF 树结构：
-  静态变换 (StaticTransformBroadcaster)：
-    base_link        → platform_link            （机器人底座）
-    turntable_link   → center_camera_link       （中间相机，随转盘转动，相对转盘静止）
-    arm_x_link_6     → camera_x_link            （末端→腕部相机，config 配置偏移）
+  静态变换 (StaticTransformBroadcaster，只发一次，永久有效)：
+    base_link        → platform_link            （机器人底座固定偏移）
+    turntable_link   → arm_x_base_link          （臂安装偏移，物理固定不变）
+    turntable_link   → center_camera_link       （中间相机，相对转盘静止）
+    arm_x_link_6     → camera_x_link            （末端→腕部相机偏移）
+    arm_x_link_6     → arm_x_tool_link          （末端→工具TCP偏移）
 
-  准静态变换 (TransformBroadcaster, 定时刷新)：
+  动态变换 (TransformBroadcaster，定时刷新)：
     platform_link    → turntable_link            （D1 关节驱动，绕 Z 轴）
-    turntable_link   → arm_x_base_link           （臂安装偏移，sim/real 两套）
 
-  动态变换 (TransformBroadcaster, 跟随 joint_states 更新)：
+  动态变换 (TransformBroadcaster，跟随 joint_states 更新)：
     arm_x_base_link  → arm_x_link_1             (关节 1)
     arm_x_link_1     → arm_x_link_2             (关节 2)
     ...
     arm_x_link_5     → arm_x_link_6             (关节 6，即末端)
 
+欧拉角约定（全文统一）：
+  所有 xyzrpy / base_orientation_deg 均为固定轴 XYZ 外旋顺序：
+    [roll_x_deg, pitch_y_deg, yaw_z_deg]
+    旋转矩阵 R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+
 可选：当 publish_robot_model=true 时，向 /joint_states 发布关节状态，
       配合 robot_state_publisher + URDF 在 RViz2 中显示模型。
 
-所有参数从 triarm_config.yaml 的 tf_publisher_node 段读取。
+所有参数从 triarm_config.yaml 读取（/** 全局段 + tf_publisher_node 段）。
 其他节点不再发布任何 TF，从 /tf 和 /tf_static 查询所需变换。
 """
 
@@ -40,15 +46,16 @@ from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 # 纯函数工具
 # ================================================================
 
-def _euler_deg_to_quat(roll_deg, pitch_deg, yaw_deg):
-    """固定轴 XYZ 欧拉角(deg) → 四元数 (w, x, y, z)
+def _euler_deg_to_quat(roll_x_deg, pitch_y_deg, yaw_z_deg):
+    """固定轴 XYZ 外旋欧拉角(deg) → 四元数 (w, x, y, z)
 
-    解析公式（sxyz：先绕固定 X，再 Y，再 Z）：
-      q = q_z ⊗ q_y ⊗ q_x
+    参数顺序：[roll_x, pitch_y, yaw_z]（与 config base_orientation_deg / xyzrpy 完全对应）
+    旋转矩阵：R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+    四元数合成：q = q_z ⊗ q_y ⊗ q_x（右边先作用）
     """
-    cr, sr = math.cos(math.radians(roll_deg)  / 2), math.sin(math.radians(roll_deg)  / 2)
-    cp, sp = math.cos(math.radians(pitch_deg) / 2), math.sin(math.radians(pitch_deg) / 2)
-    cy, sy = math.cos(math.radians(yaw_deg)   / 2), math.sin(math.radians(yaw_deg)   / 2)
+    cr, sr = math.cos(math.radians(roll_x_deg)   / 2), math.sin(math.radians(roll_x_deg)   / 2)
+    cp, sp = math.cos(math.radians(pitch_y_deg)  / 2), math.sin(math.radians(pitch_y_deg)  / 2)
+    cy, sy = math.cos(math.radians(yaw_z_deg)    / 2), math.sin(math.radians(yaw_z_deg)    / 2)
     return np.array([
         cr * cp * cy + sr * sp * sy,   # w
         sr * cp * cy - cr * sp * sy,   # x
@@ -74,7 +81,10 @@ def _make_stamped(stamp, parent, child, xyz, quat_wxyz):
 
 
 def _xyzrpy_to_stamped(stamp, parent, child, xyzrpy):
-    """[x,y,z,roll_deg,pitch_deg,yaw_deg] → TransformStamped"""
+    """[x, y, z, roll_x_deg, pitch_y_deg, yaw_z_deg] → TransformStamped
+
+    姿态为固定轴 XYZ 外旋欧拉角(deg)，R = Rz(yaw) @ Ry(pitch) @ Rx(roll)。
+    """
     q = _euler_deg_to_quat(xyzrpy[3], xyzrpy[4], xyzrpy[5])
     return _make_stamped(stamp, parent, child, xyzrpy[:3], q)
 
@@ -109,13 +119,9 @@ class TFPublisherNode(Node):
         self.declare_parameter('turntable.child',     'turntable_link')
         self.declare_parameter('turntable.axis_sign', -1)
 
-        # ── 臂安装偏移 ──
-        for arm in ['arm_a', 'arm_b']:
-            self.declare_parameter(f'arm_bases.{arm}.parent', 'turntable_link')
-            self.declare_parameter(f'arm_bases.{arm}.child',  f'{arm}_base_link')
-            for m in ['sim', 'real']:
-                self.declare_parameter(f'arm_bases.{arm}.{m}.xyzrpy',
-                                       [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        # ── 臂安装偏移（turntable_link → arm_x_base_link）──
+        # 直接复用 /** 全局段的 arm_x.base_position / arm_x.base_orientation_deg，
+        # 帧名按 arm_{ch}_base_link 规则自动生成，无需在 tf_publisher_node 段重复配置
 
         # ── 腕部相机（末端→相机静态偏移）──
         for arm in ['arm_a', 'arm_b']:
@@ -136,6 +142,14 @@ class TFPublisherNode(Node):
             self.declare_parameter(f'{arm}.base_orientation_deg', [0.0, 0.0, 0.0])
             self.declare_parameter(f'{arm}.sim_d6_mm',  172.5)
             self.declare_parameter(f'{arm}.real_d6_mm', 144.0)
+            # 工具坐标系（从 /** 继承，与 unified_arm_node 共用同一套配置）
+            # tool_frame 帧名按 arm_{ch}_tool_link 规则自动生成，无需在 config 中额外声明
+            self.declare_parameter(f'{arm}.tool_frame.name',    '')
+            self.declare_parameter(f'{arm}.tool_frame.pose',    [0.0] * 6)
+            self.declare_parameter(f'{arm}.tool_frame.payload', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cx',      0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cy',      0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cz',      0.0)
 
         # ── 读取常用参数 ──
         ns   = self.get_parameter('namespace').value
@@ -229,6 +243,16 @@ class TFPublisherNode(Node):
             'static_transforms.base_to_platform.xyzrpy').value)
         static_list.append(_xyzrpy_to_stamped(now, p, c, xyzrpy))
 
+        # turntable_link → arm_x_base_link（臂安装偏移，物理固定不变 → 静态 TF）
+        # base_orientation_deg = [roll_x, pitch_y, yaw_z]，固定轴 XYZ 外旋(deg)
+        for arm in ['arm_a', 'arm_b']:
+            arm_ch = arm[-1]
+            bp     = list(self.get_parameter(f'{arm}.base_position').value)
+            bo_deg = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
+            xyzrpy = bp + bo_deg   # [x,y,z, roll_x,pitch_y,yaw_z]
+            static_list.append(_xyzrpy_to_stamped(
+                now, 'turntable_link', f'arm_{arm_ch}_base_link', xyzrpy))
+
         # arm_x_link_6 → camera_x_link（末端→腕部相机静态偏移）
         for arm in ['arm_a', 'arm_b']:
             arm_ch    = arm[-1]
@@ -237,6 +261,21 @@ class TFPublisherNode(Node):
             xyzrpy_ec = list(self.get_parameter(
                 f'wrist_cameras.{arm}.end_to_camera_xyzrpy').value)
             static_list.append(_xyzrpy_to_stamped(now, ee_frame, cam_frame, xyzrpy_ec))
+
+        # arm_x_link_6 → arm_x_tool_link（工具坐标系 TCP）
+        # pose 来自 /** arm_x.tool_frame.pose，帧名按 arm_{ch}_tool_link 规则自动生成
+        for arm in ['arm_a', 'arm_b']:
+            arm_ch    = arm[-1]
+            ee_frame  = f'arm_{arm_ch}_link_6'
+            tool_child = f'arm_{arm_ch}_tool_link'
+            tool_pose  = list(self.get_parameter(f'{arm}.tool_frame.pose').value)
+            tool_xyzrpy = [
+                tool_pose[0], tool_pose[1], tool_pose[2],          # xyz (m) → 保持
+                math.degrees(tool_pose[3]),                         # rx rad → deg
+                math.degrees(tool_pose[4]),                         # ry rad → deg
+                math.degrees(tool_pose[5]),                         # rz rad → deg
+            ]
+            static_list.append(_xyzrpy_to_stamped(now, ee_frame, tool_child, tool_xyzrpy))
 
         # turntable_link → center_camera_link（中间相机，随转盘转动，相对转盘静止）
         cc_parent = self.get_parameter('center_camera.parent').value
@@ -281,7 +320,11 @@ class TFPublisherNode(Node):
     # ================================================================
 
     def _publish_dynamic_tfs(self):
-        """定时发布：转盘 + 臂安装偏移 + 各关节链"""
+        """定时发布：转盘旋转 + 各臂关节链
+
+        臂安装偏移（turntable_link → arm_x_base_link）是物理固定不变的，
+        已在 _publish_static_tfs() 中发布，此处不再重复。
+        """
         now = self.get_clock().now().to_msg()
         transforms = []
 
@@ -297,14 +340,6 @@ class TFPublisherNode(Node):
         angle     = axis_sign * d1_rad
         q_d1 = np.array([math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)])
         transforms.append(_make_stamped(now, tt_parent, tt_child, [0, 0, 0], q_d1))
-
-        # ── 臂安装偏移：turntable_link → arm_x_base_link ──
-        for arm in ['arm_a', 'arm_b']:
-            parent = self.get_parameter(f'arm_bases.{arm}.parent').value
-            child  = self.get_parameter(f'arm_bases.{arm}.child').value
-            xyzrpy = list(self.get_parameter(
-                f'arm_bases.{arm}.{self._mode}.xyzrpy').value)
-            transforms.append(_xyzrpy_to_stamped(now, parent, child, xyzrpy))
 
         # ── 各臂关节链：arm_x_base_link → arm_x_link_1 → ... → arm_x_link_6 ──
         for arm in ['arm_a', 'arm_b']:
