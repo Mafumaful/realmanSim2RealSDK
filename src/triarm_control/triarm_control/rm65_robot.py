@@ -299,15 +299,18 @@ class RM65Robot:
         与 _euler_zyx_to_mat / _pose_to_transform 约定完全一致：
         R = Rz(yaw) @ Ry(pitch) @ Rx(roll)，提取 (roll_x, pitch_y, yaw_z)。
         """
-        sy = math.sqrt(R[0, 0] ** 2 + R[0, 1] ** 2)
-        if sy > 1e-6:
-            roll_x  = math.atan2( R[1, 2], R[2, 2])
-            pitch_y = math.atan2(-R[0, 2], sy)
-            yaw_z   = math.atan2( R[0, 1], R[0, 0])
+        sy = -R[2, 0]
+        cy = math.sqrt(R[2, 1]**2 + R[2, 2]**2)
+
+        if cy > 1e-6:
+            roll_x  = math.atan2(R[2, 1], R[2, 2])
+            pitch_y = math.atan2(sy, cy)
+            yaw_z   = math.atan2(R[1, 0], R[0, 0])
         else:
-            roll_x  = math.atan2(-R[2, 1], R[1, 1])
-            pitch_y = math.atan2(-R[0, 2], sy)
+            roll_x  = math.atan2(-R[1, 2], R[1, 1])
+            pitch_y = math.atan2(sy, cy)
             yaw_z   = 0.0
+
         return roll_x, pitch_y, yaw_z
 
     def _pose_to_transform(self, pose):
