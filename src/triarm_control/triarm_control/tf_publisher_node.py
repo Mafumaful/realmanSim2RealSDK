@@ -366,22 +366,42 @@ class TFPublisherNode(Node):
                     transforms.append(_make_stamped(now, p_frame, c_frame, xyz, q))
             else:
                 # 降级：只发末端帧 arm_x_base_link → arm_x_link_6
+                # forward_kinematics 返回的是世界坐标系位姿，需转换为 base 相对坐标
                 result = robot.forward_kinematics(joints_deg)
                 if result:
-                    pos = result['position']
-                    rx, ry, rz = result['euler_rad']
-                    cx, sx = math.cos(rx / 2), math.sin(rx / 2)
-                    cy, sy = math.cos(ry / 2), math.sin(ry / 2)
-                    cz, sz = math.cos(rz / 2), math.sin(rz / 2)
+                    # 获取末端在世界坐标系的位姿
+                    pos_world = result['position']
+                    roll_x, pitch_y, yaw_z = result['euler_rad']
+
+                    # 构建世界坐标系下的末端变换矩阵
+                    T_world = np.eye(4)
+                    T_world[0:3, 3] = pos_world
+                    T_world[0:3, 0:3] = robot._euler_zyx_to_mat(
+                        math.degrees(roll_x), math.degrees(pitch_y), math.degrees(yaw_z))
+
+                    # 转换到 base 坐标系：T_base = T_world_to_base @ T_world
+                    T_turntable = robot._build_turntable_transform()
+                    T_base_on_turntable = robot._build_base_transform()
+                    T_world_to_base = np.linalg.inv(T_turntable @ T_base_on_turntable)
+                    T_base = T_world_to_base @ T_world
+
+                    # 提取 base 相对位姿
+                    pos_base = T_base[0:3, 3]
+                    roll_b, pitch_b, yaw_b = robot._rot_to_euler_xyz(T_base[0:3, 0:3])
+
+                    # 转换为四元数（固定轴 XYZ 外旋）
+                    cr, sr = math.cos(roll_b / 2), math.sin(roll_b / 2)
+                    cp, sp = math.cos(pitch_b / 2), math.sin(pitch_b / 2)
+                    cy, sy = math.cos(yaw_b / 2), math.sin(yaw_b / 2)
                     q = np.array([
-                        cx * cy * cz + sx * sy * sz,
-                        sx * cy * cz - cx * sy * sz,
-                        cx * sy * cz + sx * cy * sz,
-                        cx * cy * sz - sx * sy * cz,
+                        cr * cp * cy + sr * sp * sy,
+                        sr * cp * cy - cr * sp * sy,
+                        cr * sp * cy + sr * cp * sy,
+                        cr * cp * sy - sr * sp * cy,
                     ])
                     transforms.append(_make_stamped(
                         now, f'arm_{arm_ch}_base_link',
-                        f'arm_{arm_ch}_link_6', pos, q))
+                        f'arm_{arm_ch}_link_6', pos_base, q))
 
         self._dynamic_br.sendTransform(transforms)
 

@@ -41,13 +41,18 @@ class RM65Robot:
         self.d6_mm = d6_mm
         self.turntable_angle_deg = 0.0  # 转盘旋转角度（绕z轴）
 
-        # 构建 DH 参数
+        # 构建 DH 参数（同时保存为实例变量，供 joint_transforms 复用）
         mm = 1e-3
+        self._dh_a     = [0, 0, 256*mm, 0, 0, 0]
+        self._dh_alpha = [0, 90, 0, 90, -90, 90]
+        self._dh_d     = [240.5*mm, 0, 0, 210*mm, 0, d6_mm*mm]
+        self._dh_offset= [0, 90, 90, 0, 0, 0]
+
         dh = rm_dh_t(
-            a     = [0, 0, 256*mm, 0, 0, 0],
-            alpha = [0, 90, 0, 90, -90, 90],
-            d     = [240.5*mm, 0, 0, 210*mm, 0, d6_mm*mm],
-            offset= [0, 90, 90, 0, 0, 0],
+            a     = self._dh_a,
+            alpha = self._dh_alpha,
+            d     = self._dh_d,
+            offset= self._dh_offset,
         )
 
         # 初始化官方算法库
@@ -96,13 +101,75 @@ class RM65Robot:
         T_world = T_turntable @ T_base_on_turntable @ T_end_base
 
         x, y, z = T_world[0:3, 3]
-        rx_r, ry_r, rz_r = self._rot_to_euler_zyx(T_world[0:3, 0:3])
+        roll_x, pitch_y, yaw_z = self._rot_to_euler_xyz(T_world[0:3, 0:3])
 
         return {
             'position': [x, y, z],
-            'euler_deg': [math.degrees(rx_r), math.degrees(ry_r), math.degrees(rz_r)],
-            'euler_rad': [rx_r, ry_r, rz_r],
+            'euler_deg': [math.degrees(roll_x), math.degrees(pitch_y), math.degrees(yaw_z)],
+            'euler_rad': [roll_x, pitch_y, yaw_z],
         }
+
+    def joint_transforms(self, joint_angles_deg):
+        """计算每个关节的相对变换（用于 TF 树发布）
+
+        参数
+        ----
+        joint_angles_deg : list[float], 6个关节角度，单位 deg
+
+        返回
+        ----
+        list of (xyz, quat_wxyz): 6个变换，每个表示 link_i → link_{i+1}
+            xyz: [x, y, z] 单位 m
+            quat_wxyz: [w, x, y, z] 四元数
+        """
+        transforms = []
+        for i in range(6):
+            theta = math.radians(joint_angles_deg[i] + self._dh_offset[i])
+            c, s = math.cos(theta), math.sin(theta)
+            ca, sa = math.cos(math.radians(self._dh_alpha[i])), math.sin(math.radians(self._dh_alpha[i]))
+
+            # DH 变换矩阵
+            T = np.array([
+                [c, -s*ca,  s*sa, self._dh_a[i]*c],
+                [s,  c*ca, -c*sa, self._dh_a[i]*s],
+                [0,  sa,    ca,   self._dh_d[i]  ],
+                [0,  0,     0,    1               ]
+            ])
+
+            xyz = T[0:3, 3]
+            R = T[0:3, 0:3]
+
+            # 旋转矩阵转四元数
+            trace = R[0,0] + R[1,1] + R[2,2]
+            if trace > 0:
+                s = 0.5 / math.sqrt(trace + 1.0)
+                w = 0.25 / s
+                x = (R[2,1] - R[1,2]) * s
+                y = (R[0,2] - R[2,0]) * s
+                z = (R[1,0] - R[0,1]) * s
+            else:
+                if R[0,0] > R[1,1] and R[0,0] > R[2,2]:
+                    s = 2.0 * math.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
+                    w = (R[2,1] - R[1,2]) / s
+                    x = 0.25 * s
+                    y = (R[0,1] + R[1,0]) / s
+                    z = (R[0,2] + R[2,0]) / s
+                elif R[1,1] > R[2,2]:
+                    s = 2.0 * math.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
+                    w = (R[0,2] - R[2,0]) / s
+                    x = (R[0,1] + R[1,0]) / s
+                    y = 0.25 * s
+                    z = (R[1,2] + R[2,1]) / s
+                else:
+                    s = 2.0 * math.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
+                    w = (R[1,0] - R[0,1]) / s
+                    x = (R[0,2] + R[2,0]) / s
+                    y = (R[1,2] + R[2,1]) / s
+                    z = 0.25 * s
+
+            transforms.append((xyz, np.array([w, x, y, z])))
+
+        return transforms
 
     def inverse_kinematics(
         self,
@@ -151,8 +218,8 @@ class RM65Robot:
 
         # 提取 base 坐标系下的位姿
         x, y, z = T_target_base[0:3, 3]
-        rx_r, ry_r, rz_r = self._rot_to_euler_zyx(T_target_base[0:3, 0:3])
-        target_pose_base = [x, y, z, rx_r, ry_r, rz_r]
+        roll_x, pitch_y, yaw_z = self._rot_to_euler_xyz(T_target_base[0:3, 0:3])
+        target_pose_base = [x, y, z, roll_x, pitch_y, yaw_z]
 
         # 构建逆解参数（当前关节角度、目标位姿、flag）
         ik_params = rm_inverse_kinematics_params_t(
@@ -226,18 +293,22 @@ class RM65Robot:
                        [0, math.sin(rx),  math.cos(rx)]])
         return Rz @ Ry @ Rx
 
-    def _rot_to_euler_zyx(self, R):
-        """旋转矩阵 → ZYX欧拉角(rad)"""
-        sy = math.sqrt(R[0,0]**2 + R[1,0]**2)
-        if sy > 1e-6:
-            rx = math.atan2(R[2,1], R[2,2])
-            ry = math.atan2(-R[2,0], sy)
-            rz = math.atan2(R[1,0], R[0,0])
+    def _rot_to_euler_xyz(self, R):
+        """旋转矩阵 → 固定轴 XYZ 外旋欧拉角 (rad)
+
+        与 _euler_zyx_to_mat / _pose_to_transform 约定完全一致：
+        R = Rz(yaw) @ Ry(pitch) @ Rx(roll)，提取 (roll_x, pitch_y, yaw_z)。
+        """
+        cy = math.sqrt(R[0, 0] ** 2 + R[0, 1] ** 2)
+        if cy > 1e-6:
+            roll_x  = math.atan2( R[1, 2], R[2, 2])
+            pitch_y = math.atan2(-R[0, 2], cy)
+            yaw_z   = math.atan2( R[0, 1], R[0, 0])
         else:
-            rx = math.atan2(-R[1,2], R[1,1])
-            ry = math.atan2(-R[2,0], sy)
-            rz = 0.0
-        return rx, ry, rz
+            roll_x  = math.atan2(-R[2, 1], R[1, 1])
+            pitch_y = math.atan2(-R[0, 2], cy)
+            yaw_z   = 0.0
+        return roll_x, pitch_y, yaw_z
 
     def _pose_to_transform(self, pose):
         """位姿 [x,y,z,rx,ry,rz] → 齐次变换矩阵
