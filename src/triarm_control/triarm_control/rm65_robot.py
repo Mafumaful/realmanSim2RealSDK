@@ -128,12 +128,13 @@ class RM65Robot:
             c, s = math.cos(theta), math.sin(theta)
             ca, sa = math.cos(math.radians(self._dh_alpha[i])), math.sin(math.radians(self._dh_alpha[i]))
 
-            # DH 变换矩阵
+            # MDH (Modified DH / Craig convention) 变换矩阵
+            # T = Rx(α) · Tx(a) · Rz(θ) · Tz(d)
             T = np.array([
-                [c, -s*ca,  s*sa, self._dh_a[i]*c],
-                [s,  c*ca, -c*sa, self._dh_a[i]*s],
-                [0,  sa,    ca,   self._dh_d[i]  ],
-                [0,  0,     0,    1               ]
+                [c,    -s,     0,    self._dh_a[i]             ],
+                [s*ca,  c*ca, -sa,  -self._dh_d[i]*sa          ],
+                [s*sa,  c*sa,  ca,   self._dh_d[i]*ca          ],
+                [0,     0,     0,    1                          ]
             ])
 
             xyz = T[0:3, 3]
