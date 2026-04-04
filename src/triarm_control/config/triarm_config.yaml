@@ -13,33 +13,7 @@
   ros__parameters:
     namespace: "robot"    # 话题命名空间
     mode: "sim"           # 运行模式: sim / real
-
-    # A/B 臂 RM65Robot IK/FK 参数（tf_publisher / unified_arm / gui 共用）
-    arm_a:
-      base_position:        [0.05457, -0.04863, 0.2273]  # 机械臂base相对转盘位置 (m)
-      base_orientation_deg: [45.0, 90.0, 0.0]            # [roll_x, pitch_y, yaw_z] 固定轴XYZ外旋 (deg)
-      sim_d6_mm:  172.5    # 仿真末端 d6 参数 (mm)，RM65-6F + Isaac Sim 模型
-      real_d6_mm: 144.0    # 实物末端 d6 参数 (mm)，RM65-6F 实际安装长度
-      tool_frame:           # 工具坐标系（TCP 相对末端法兰的偏移）
-        name: "gripper_a"
-        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [x,y,z(m), roll_x,pitch_y,yaw_z(rad)]，TODO: 标定后填写
-        payload: 0.0                              # 工具负载质量 (kg)
-        cx: 0.0                                   # 工具质心 X (m)
-        cy: 0.0                                   # 工具质心 Y (m)
-        cz: 0.0                                   # 工具质心 Z (m)
-    arm_b:
-      base_position:        [-0.04867, -0.05374, 0.2273]
-      base_orientation_deg: [135.0, 90.0, 0.0]           # [roll_x, pitch_y, yaw_z] 固定轴XYZ外旋 (deg)
-      sim_d6_mm:  172.5
-      real_d6_mm: 144.0
-      tool_frame:
-        name: "gripper_b"
-        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # TODO: 标定后填写
-        payload: 0.0
-        cx: 0.0
-        cy: 0.0
-        cz: 0.0
-
+  
 # ============================================================
 # TF 发布节点
 # ============================================================
@@ -49,6 +23,32 @@ tf_publisher_node:
 
     # ── 是否同时向 robot_state_publisher 发布关节状态（用于 RViz2 URDF 可视化）──
     publish_robot_model: false
+
+    # ── 臂参数（从全局继承）──
+    arm_a:
+      base_position:        [0.05457, -0.04863, 0.2273]
+      base_orientation_deg: [45.0, 90.0, 0.0]
+      sim_d6_mm:  172.5
+      real_d6_mm: 144.0
+      tool_frame:
+        name: "gripper_a"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        payload: 0.0
+        cx: 0.0
+        cy: 0.0
+        cz: 0.0
+    arm_b:
+      base_position:        [0.04867, 0.05374, 0.2273]
+      base_orientation_deg: [0.0, 90.0, 45.0]
+      sim_d6_mm:  172.5
+      real_d6_mm: 144.0
+      tool_frame:
+        name: "gripper_b"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        payload: 0.0
+        cx: 0.0
+        cy: 0.0
+        cz: 0.0
 
     # ── 静态变换 ──
     static_transforms:
@@ -78,7 +78,7 @@ tf_publisher_node:
     center_camera:
       parent: "turntable_link"
       child:  "center_camera_link"
-      xyzrpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: 根据实际标定填写
+      xyzrpy: [0.42478, 0.0, 0.6, -179.952, -4.66, 90.49]
 
 # ============================================================
 # 关节插值控制节点
