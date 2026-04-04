@@ -55,7 +55,7 @@ tf_publisher_node:
       base_to_platform:       # base_link → platform_link
         parent: "base_link"
         child:  "platform_link"
-        xyzrpy: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+        xyzrpy: [0.0, 0.0, 0.00, 0.0, 0.0, 0.0]
       # 注意：中间相机不再使用静态 TF，改为订阅 /center_camera/pose 动态绑定
 
     # ── 转盘（D1）：由 joint_platform_D1 关节角驱动，绕 Z 轴旋转 ──

@@ -232,12 +232,14 @@ class RealManAlgo:
         self,
         joints_deg: List[float],
         flag: int = 1,
+        T_base_in_world=None,
     ) -> Optional[List[float]]:
         """正运动学解算
 
         Args:
             joints_deg: 关节角度 [j1..j6] (角度制)
             flag: 保留参数，兼容旧接口
+            T_base_in_world: np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 中的变换。
 
         Returns:
             位姿 [x,y,z,rx,ry,rz] (姿态单位为弧度) 或 None
@@ -247,11 +249,8 @@ class RealManAlgo:
 
         with self._lock:
             try:
-                # RM65Robot.forward_kinematics 返回字典:
-                # {'position': [x,y,z], 'euler_deg': [rx,ry,rz], 'euler_rad': [rx,ry,rz]}
-                result = self._robot.forward_kinematics(joints_deg)
+                result = self._robot.forward_kinematics(joints_deg, T_base_in_world)
                 if result is not None:
-                    # 返回 [x,y,z,rx,ry,rz]，姿态单位为弧度
                     return result['position'] + result['euler_rad']
                 return None
             except Exception as e:
@@ -448,12 +447,13 @@ class RealManSDKWrapper:
         return [math.radians(d) for d in result_deg]
 
     def forward_kinematics(
-        self, joints: List[float]
+        self, joints: List[float], T_base_in_world=None,
     ) -> Optional[dict]:
         """正运动学解算 (SDK Algo)
 
         Args:
             joints: 关节角度 (弧度)
+            T_base_in_world: np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 中的变换。
         Returns:
             {'x','y','z','rx','ry','rz'} 或 None
         """
@@ -462,7 +462,7 @@ class RealManSDKWrapper:
                 return None
 
         joints_deg = [math.degrees(j) for j in joints]
-        result = self._algo.forward_kinematics(joints_deg, flag=1)
+        result = self._algo.forward_kinematics(joints_deg, flag=1, T_base_in_world=T_base_in_world)
         if result is None:
             return None
         return {

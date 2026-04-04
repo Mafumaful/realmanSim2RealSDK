@@ -76,13 +76,15 @@ class RM65Robot:
         """
         self.turntable_angle_deg = angle_deg
 
-    def forward_kinematics(self, joint_angles_deg):
+    def forward_kinematics(self, joint_angles_deg, T_base_in_world=None):
         """
-        正运动学：关节角度 → 末端位姿（世界坐标系）
+        正运动学：关节角度 → 末端位姿（世界坐标系，以 base_link 为原点）
 
         参数
         ----
         joint_angles_deg : list[float], 6个关节角度，单位 deg
+        T_base_in_world  : np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 坐标系中的变换。
+                           若提供则直接使用（从 TF 树查询），否则回退到内部手动构建。
 
         返回
         ----
@@ -91,14 +93,13 @@ class RM65Robot:
             'euler_deg'  : [rx, ry, rz] ZYX欧拉角，单位 deg
             'euler_rad'  : [rx, ry, rz] ZYX欧拉角，单位 rad
         """
-        # 官方库计算（相对 base）
         pose_base = self._algo.rm_algo_forward_kinematics(joint_angles_deg, flag=1)
-
-        # 转换到世界坐标系：世界 = 转盘 @ base相对转盘 @ 末端相对base
-        T_turntable = self._build_turntable_transform()
-        T_base_on_turntable = self._build_base_transform()
         T_end_base = self._pose_to_transform(pose_base)
-        T_world = T_turntable @ T_base_on_turntable @ T_end_base
+
+        if T_base_in_world is not None:
+            T_world = T_base_in_world @ T_end_base
+        else:
+            T_world = self._build_turntable_transform() @ self._build_base_transform() @ T_end_base
 
         x, y, z = T_world[0:3, 3]
         roll_x, pitch_y, yaw_z = self._rot_to_euler_xyz(T_world[0:3, 0:3])
@@ -177,17 +178,18 @@ class RM65Robot:
         target_position,
         target_orientation_deg=None,
         current_joint_angles_deg=None,
+        T_base_in_world=None,
     ):
         """
-        逆运动学：末端位姿（世界坐标系）→ 关节角度
+        逆运动学：末端位姿（世界坐标系，以 base_link 为原点）→ 关节角度
 
         参数
         ----
         target_position          : [x, y, z] 目标位置，单位 m
-        target_orientation_deg   : [rx, ry, rz] 目标姿态，单位 deg
-                                   若为 None，则使用当前姿态
-        current_joint_angles_deg : list[float], 当前关节角度，单位 deg
-                                   用于选择逆解分支，默认 [0]*6
+        target_orientation_deg   : [rx, ry, rz] 目标姿态，单位 deg；None 则用当前姿态
+        current_joint_angles_deg : list[float], 当前关节角度，单位 deg；默认 [0]*6
+        T_base_in_world          : np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 中的变换。
+                                   若提供则直接使用（从 TF 树查询），否则回退到内部手动构建。
 
         返回
         ----
@@ -198,24 +200,22 @@ class RM65Robot:
         if current_joint_angles_deg is None:
             current_joint_angles_deg = [0.0] * 6
 
-        # 如果未指定姿态，使用当前关节角度对应的姿态
         if target_orientation_deg is None:
-            current_pose = self.forward_kinematics(current_joint_angles_deg)
+            current_pose = self.forward_kinematics(current_joint_angles_deg, T_base_in_world)
             target_orientation_deg = current_pose['euler_deg']
 
-        # 构建世界坐标系下的目标位姿
         target_pose_world = list(target_position) + [
             math.radians(target_orientation_deg[0]),
             math.radians(target_orientation_deg[1]),
             math.radians(target_orientation_deg[2]),
         ]
 
-        # 转换到 base 坐标系：base = (转盘 @ base相对转盘)^-1 @ 世界
-        T_turntable = self._build_turntable_transform()
-        T_base_on_turntable = self._build_base_transform()
-        T_world_to_base = np.linalg.inv(T_turntable @ T_base_on_turntable)
-        T_target_world = self._pose_to_transform(target_pose_world)
-        T_target_base = T_world_to_base @ T_target_world
+        if T_base_in_world is not None:
+            T_world_to_base = np.linalg.inv(T_base_in_world)
+        else:
+            T_world_to_base = np.linalg.inv(
+                self._build_turntable_transform() @ self._build_base_transform())
+        T_target_base = T_world_to_base @ self._pose_to_transform(target_pose_world)
 
         # 提取 base 坐标系下的位姿
         x, y, z = T_target_base[0:3, 3]

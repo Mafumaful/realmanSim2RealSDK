@@ -28,11 +28,13 @@ import time
 import threading
 from typing import List, Optional
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
+from tf2_ros import Buffer, TransformListener
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
 
 import transforms3d.quaternions as txq
@@ -90,6 +92,9 @@ class ArmBridge:
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
         self._sim_motion_grace_period = sim_motion_grace_period
+        self._arm_ch = arm_name[-1]  # 'a' or 'b'
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, node)
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(
@@ -153,6 +158,27 @@ class ArmBridge:
         self.logger.info(
             f'{self._tag} 初始化完成 (mode={mode}, ip={ip}:{port})')
 
+    def _get_T_base_in_world(self):
+        """从 TF 树查询 arm_x_base_link 在 base_link 中的变换矩阵 (4x4)，失败返回 None"""
+        target = f'arm_{self._arm_ch}_base_link'
+        try:
+            tf = self._tf_buffer.lookup_transform('base_link', target, rclpy.time.Time())
+            t = tf.transform.translation
+            r = tf.transform.rotation
+            T = np.eye(4)
+            # 四元数 → 旋转矩阵
+            w, x, y, z = r.w, r.x, r.y, r.z
+            T[0:3, 0:3] = np.array([
+                [1-2*(y*y+z*z),   2*(x*y-z*w),   2*(x*z+y*w)],
+                [  2*(x*y+z*w), 1-2*(x*x+z*z),   2*(y*z-x*w)],
+                [  2*(x*z-y*w),   2*(y*z+x*w), 1-2*(x*x+y*y)],
+            ])
+            T[0:3, 3] = [t.x, t.y, t.z]
+            return T
+        except Exception as e:
+            self.logger.warn(f'{self._tag} TF查询失败({target}): {e}，回退到内部计算')
+            return None
+
     def set_publish_target_fn(self, fn):
         """设置共享目标发布回调 (sim模式)
         fn(indices, joints_rad) → 更新共享23关节数组并发布
@@ -211,9 +237,13 @@ class ArmBridge:
             self.logger.warn(f'{self._tag} Algo未就绪')
             return None
 
-        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
-        # URDF 中 D1 轴方向与 Isaac Sim 当前反馈符号相反。
-        algo._robot.set_turntable_angle(-d1_deg)
+        T_base_in_world = self._get_T_base_in_world()
+        if T_base_in_world is None:
+            # 回退：用转盘角度手动构建
+            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+            algo._robot.set_turntable_angle(-d1_deg)
+        else:
+            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
 
         with self._lock:
             q_ref_deg = [math.degrees(q) for q in self._current_joints]
@@ -232,6 +262,7 @@ class ArmBridge:
                 math.degrees(rz),
             ],
             current_joint_angles_deg=q_ref_deg,
+            T_base_in_world=T_base_in_world,
         )
         if not result or not result.get('success'):
             self.logger.warn(
@@ -352,9 +383,10 @@ class ArmBridge:
             return False
 
         # 获取当前位姿
+        T_base_in_world = self._get_T_base_in_world()
         with self._lock:
             current_joints = list(self._current_joints)
-        pose_dict = self._sdk.forward_kinematics(current_joints)
+        pose_dict = self._sdk.forward_kinematics(current_joints, T_base_in_world=T_base_in_world)
         if not pose_dict:
             self.logger.error(f'{self._tag} FK失败')
             return False
@@ -518,14 +550,15 @@ class ArmBridge:
                     self._current_pose = pose
 
         elif self.mode == 'sim' and self._sdk.is_ready:
-            # FK 前同步转盘角度，确保与 IK 一致
-            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
-            algo = self._sdk._algo
-            if algo.is_ready:
-                algo._robot.set_turntable_angle(-d1_deg)
+            T_base_in_world = self._get_T_base_in_world()
+            if T_base_in_world is None:
+                d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+                algo = self._sdk._algo
+                if algo.is_ready:
+                    algo._robot.set_turntable_angle(-d1_deg)
             with self._lock:
                 joints_copy = list(self._current_joints)
-            pose_dict = self._sdk.forward_kinematics(joints_copy)
+            pose_dict = self._sdk.forward_kinematics(joints_copy, T_base_in_world=T_base_in_world)
             if pose_dict:
                 pose = self._dict_to_pose(pose_dict)
                 with self._lock:
