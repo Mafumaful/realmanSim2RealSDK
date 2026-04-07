@@ -132,12 +132,11 @@ class JointControlGUI(Node):
         for arm in ['arm_a', 'arm_b']:
             bp = list(self.get_parameter(f'{arm}.base_position').value)
             bo = list(self.get_parameter(f'{arm}.base_orientation_deg').value)
-            d6 = self.get_parameter(f'{arm}.d6_mm').value
+            d6_key = f'{arm}.sim_d6_mm' if self.mode == 'sim' else f'{arm}.real_d6_mm'
+            d6 = self.get_parameter(d6_key).value
             algo = RealManAlgo(base_position=bp, base_orientation_deg=bo, d6_mm=d6)
             algo.initialize()
             self._algos[arm] = algo
-        # 默认引用 (向后兼容其他使用 pos2matrix/matrix2pos 的地方)
-        self._algo = self._algos['arm_a']
 
         # GUI组件
         self.entries = []
@@ -340,7 +339,6 @@ class JointControlGUI(Node):
         ttk.Button(btn_frame, text='MoveJP', command=lambda: self._send_world_pose('movejp')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='MoveP', command=lambda: self._send_world_pose('movep')).pack(side='left', padx=10)
         ttk.Button(btn_frame, text='随机可达点', command=self._gen_random_reachable).pack(side='left', padx=10)
-        ttk.Button(btn_frame, text='直接执行(基座系)', command=self._send_base_pose).pack(side='left', padx=10)
 
         # 状态标签
         self.world_pose_status = ttk.Label(frame, text='就绪', foreground='green')
@@ -350,14 +348,17 @@ class JointControlGUI(Node):
         current_frame = ttk.LabelFrame(frame, text='当前位姿', padding=10)
         current_frame.grid(row=6, column=0, columnspan=6, pady=10, padx=10, sticky='ew')
 
+        # anchor='w' 左对齐 + width 固定字符宽度，防止浮点数值变化导致标签宽度抖动
         self.current_pose_label = ttk.Label(
             current_frame,
-            text='base:  X=-, Y=-, Z=- | RX=-, RY=-, RZ=- \n'
-                 'World: X=-, Y=-, Z=- | RX=-, RY=-, RZ=- ',
+            text='base:  X= -.---- , Y= -.---- , Z= -.----  (m) | RX= ---.-, RY= ---.-, RZ= ---.- (°)\n'
+                 'World: X= -.---- , Y= -.---- , Z= -.----  (m) | RX= ---.-, RY= ---.-, RZ= ---.- (°)',
             font=('Courier', 10),
-            justify='left'
+            justify='left',
+            anchor='w',
+            width=90,
         )
-        self.current_pose_label.pack()
+        self.current_pose_label.pack(fill='x')
 
     def _set_gripper(self, side: str, angle_rad: float):
         """快捷设置夹爪角度并立即发送
@@ -404,14 +405,18 @@ class JointControlGUI(Node):
     def _add_joint_row(self, parent, row, label, min_val, max_val, idx):
         ttk.Label(parent, text=label, width=6).grid(row=row, column=0, padx=2, pady=2)
 
-        # 实时值
-        rt_label = ttk.Label(parent, text='--', width=8, foreground='blue')
-        rt_label.grid(row=row, column=1, padx=2, pady=2)
+        # 固定列宽（minsize），防止数据长度变化引起列宽抖动
+        parent.columnconfigure(1, minsize=80)
+        parent.columnconfigure(2, minsize=80)
+
+        # 实时值：anchor='e' 右对齐，内容变化时不会引起列宽变化
+        rt_label = ttk.Label(parent, text='   --  ', width=8, foreground='blue', anchor='e')
+        rt_label.grid(row=row, column=1, padx=2, pady=2, sticky='ew')
         self.realtime_labels.append((idx, rt_label))
 
-        # 指令值
-        cmd_label = ttk.Label(parent, text='--', width=8, foreground='green')
-        cmd_label.grid(row=row, column=2, padx=2, pady=2)
+        # 指令值：anchor='e' 右对齐
+        cmd_label = ttk.Label(parent, text='   --  ', width=8, foreground='green', anchor='e')
+        cmd_label.grid(row=row, column=2, padx=2, pady=2, sticky='ew')
         self.cmd_labels.append((idx, cmd_label))
 
         # 滑块
@@ -461,7 +466,8 @@ class JointControlGUI(Node):
 
     def _update_realtime_labels(self):
         for idx, label in self.realtime_labels:
-            label.config(text=f'{math.degrees(self.current_positions[idx]):.1f}°')
+            # 用固定宽度格式化（共7字符 + °），防止字符串长度变化引起列宽抖动
+            label.config(text=f'{math.degrees(self.current_positions[idx]):>7.1f}°')
 
     def _update_current_pose_display(self):
         """更新当前位姿显示（base_link + Isaac Sim World）"""
@@ -497,10 +503,14 @@ class JointControlGUI(Node):
                 wx, wy, wz, wo_deg = self._calc_isaac_world_pose(
                     arm, joints_deg, d1_deg)
 
-                text = (f'base:  X={pos[0]:.4f}, Y={pos[1]:.4f}, Z={pos[2]:.4f} (m) '
-                       f'| RX={ori_deg[0]:.1f}, RY={ori_deg[1]:.1f}, RZ={ori_deg[2]:.1f} (°) \n'
-                       f'World: X={wx:.4f}, Y={wy:.4f}, Z={wz:.4f} (m) '
-                       f'| RX={wo_deg[0]:.1f}, RY={wo_deg[1]:.1f}, RZ={wo_deg[2]:.1f} (°)')
+                # 固定字段宽度格式化：X/Y/Z 用 8.4f（含符号共8字符），角度用 6.1f（含符号共6字符）
+                # 这样每帧文本长度恒定，标签不会因内容变化而重排布局
+                text = (
+                    f'base:  X={pos[0]:8.4f}, Y={pos[1]:8.4f}, Z={pos[2]:8.4f} (m) '
+                    f'| RX={ori_deg[0]:6.1f}, RY={ori_deg[1]:6.1f}, RZ={ori_deg[2]:6.1f} (°)\n'
+                    f'World: X={wx:8.4f}, Y={wy:8.4f}, Z={wz:8.4f} (m) '
+                    f'| RX={wo_deg[0]:6.1f}, RY={wo_deg[1]:6.1f}, RZ={wo_deg[2]:6.1f} (°)'
+                )
 
                 self.current_pose_label.config(text=text)
         except Exception as e:
@@ -574,7 +584,8 @@ class JointControlGUI(Node):
 
     def _update_cmd_labels(self):
         for idx, label in self.cmd_labels:
-            label.config(text=f'{math.degrees(self.cmd_positions[idx]):.1f}°')
+            # 用固定宽度格式化（共7字符 + °），防止字符串长度变化引起列宽抖动
+            label.config(text=f'{math.degrees(self.cmd_positions[idx]):>7.1f}°')
 
     def _sync_sliders_to_cmd(self):
         """将滑块和输入框同步到当前指令值 (仅同步机械臂关节, 跳过夹爪 index 19-22)"""
@@ -1165,7 +1176,7 @@ class JointControlGUI(Node):
         Returns:
             [x,y,z,rx,ry,rz] m+rad (世界系), 失败返回None
         """
-        algo = self._algos.get(arm, self._algo)
+        algo = self._algos[arm]
 
         # 从ROS参数获取base变换 (平台到臂基座)
         base_pos = list(self.get_parameter(f'{arm}.base_position').value)
@@ -1197,27 +1208,6 @@ class JointControlGUI(Node):
             return None
 
         return list(pose_W_T)
-
-    def _send_base_pose(self):
-        """直接发送臂基座坐标系位姿 (跳过世界坐标变换)"""
-        try:
-            vals = [float(e.get()) for e in self.world_pose_entries]
-            speed = int(self.move_speed_entry.get())
-        except ValueError:
-            self.world_pose_status.config(text='输入无效', foreground='red')
-            return
-        arm = self.target_arm_var.get()
-        # 直接用SDK的movej_p，不经过坐标变换
-        from std_msgs.msg import Float64MultiArray
-        # 发布到专用话题，让unified_arm_node直接执行IK
-        if not hasattr(self, 'base_pose_pub'):
-            self.base_pose_pub = self.create_publisher(
-                Float64MultiArray, f'{arm}/base_pose_cmd', 10)
-        msg = Float64MultiArray()
-        msg.data = vals + [float(speed)]
-        self.base_pose_pub.publish(msg)
-        self.world_pose_status.config(text='已发送(基座系)', foreground='orange')
-        self._last_target_pose = vals
 
     def _on_smooth_changed(self):
         """平滑处理勾选框变化"""

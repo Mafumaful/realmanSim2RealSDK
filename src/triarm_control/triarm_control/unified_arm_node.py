@@ -28,13 +28,14 @@ import time
 import threading
 from typing import List, Optional
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose, TransformStamped
+from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
+from tf2_ros import Buffer, TransformListener
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
-from tf2_ros import TransformBroadcaster
 
 import transforms3d.quaternions as txq
 import transforms3d.euler as txe
@@ -90,13 +91,17 @@ class ArmBridge:
         self._sim_joint_tol = sim_joint_tol
         self._sim_motion_timeout = sim_motion_timeout
         self._sim_motion_grace_period = sim_motion_grace_period
+        self._arm_ch = arm_name[-1]  # 'a' or 'b'
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, node)
 
         # SDK wrapper (模式感知，内部自动路由 sim/real)
         self._sdk = RealManSDKWrapper(
             ip, port, arm_id, mode=mode,
             base_position=base_position,
             base_orientation_deg=base_orientation_deg,
-            d6_mm=d6_mm)
+            d6_mm=d6_mm,
+            tool_frame=tool_frame)
 
         # 当前状态
         self._current_joints = [0.0] * 6  # 6关节弧度
@@ -151,6 +156,27 @@ class ArmBridge:
 
         self.logger.info(
             f'{self._tag} 初始化完成 (mode={mode}, ip={ip}:{port})')
+
+    def _get_T_base_in_world(self):
+        """从 TF 树查询 arm_x_base_link 在 base_link 中的变换矩阵 (4x4)，失败返回 None"""
+        target = f'arm_{self._arm_ch}_base_link'
+        try:
+            tf = self._tf_buffer.lookup_transform('base_link', target, rclpy.time.Time())
+            t = tf.transform.translation
+            r = tf.transform.rotation
+            T = np.eye(4)
+            # 四元数 → 旋转矩阵
+            w, x, y, z = r.w, r.x, r.y, r.z
+            T[0:3, 0:3] = np.array([
+                [1-2*(y*y+z*z),   2*(x*y-z*w),   2*(x*z+y*w)],
+                [  2*(x*y+z*w), 1-2*(x*x+z*z),   2*(y*z-x*w)],
+                [  2*(x*z-y*w),   2*(y*z+x*w), 1-2*(x*x+y*y)],
+            ])
+            T[0:3, 3] = [t.x, t.y, t.z]
+            return T
+        except Exception as e:
+            self.logger.warn(f'{self._tag} TF查询失败({target}): {e}，回退到内部计算')
+            return None
 
     def set_publish_target_fn(self, fn):
         """设置共享目标发布回调 (sim模式)
@@ -210,9 +236,13 @@ class ArmBridge:
             self.logger.warn(f'{self._tag} Algo未就绪')
             return None
 
-        d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
-        # URDF 中 D1 轴方向与 Isaac Sim 当前反馈符号相反。
-        algo._robot.set_turntable_angle(-d1_deg)
+        T_base_in_world = self._get_T_base_in_world()
+        if T_base_in_world is None:
+            # 回退：用转盘角度手动构建
+            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+            algo._robot.set_turntable_angle(-d1_deg)
+        else:
+            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
 
         with self._lock:
             q_ref_deg = [math.degrees(q) for q in self._current_joints]
@@ -231,6 +261,7 @@ class ArmBridge:
                 math.degrees(rz),
             ],
             current_joint_angles_deg=q_ref_deg,
+            T_base_in_world=T_base_in_world,
         )
         if not result or not result.get('success'):
             self.logger.warn(
@@ -351,9 +382,10 @@ class ArmBridge:
             return False
 
         # 获取当前位姿
+        T_base_in_world = self._get_T_base_in_world()
         with self._lock:
             current_joints = list(self._current_joints)
-        pose_dict = self._sdk.forward_kinematics(current_joints)
+        pose_dict = self._sdk.forward_kinematics(current_joints, T_base_in_world=T_base_in_world)
         if not pose_dict:
             self.logger.error(f'{self._tag} FK失败')
             return False
@@ -517,14 +549,15 @@ class ArmBridge:
                     self._current_pose = pose
 
         elif self.mode == 'sim' and self._sdk.is_ready:
-            # FK 前同步转盘角度，确保与 IK 一致
-            d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
-            algo = self._sdk._algo
-            if algo.is_ready:
-                algo._robot.set_turntable_angle(-d1_deg)
+            T_base_in_world = self._get_T_base_in_world()
+            if T_base_in_world is None:
+                d1_deg = self._get_d1_angle() if self._get_d1_angle else 0.0
+                algo = self._sdk._algo
+                if algo.is_ready:
+                    algo._robot.set_turntable_angle(-d1_deg)
             with self._lock:
                 joints_copy = list(self._current_joints)
-            pose_dict = self._sdk.forward_kinematics(joints_copy)
+            pose_dict = self._sdk.forward_kinematics(joints_copy, T_base_in_world=T_base_in_world)
             if pose_dict:
                 pose = self._dict_to_pose(pose_dict)
                 with self._lock:
@@ -568,8 +601,6 @@ class UnifiedArmNode(Node):
         self.declare_parameter('arm_a.port', 8080)
         self.declare_parameter('arm_b.ip', '192.168.1.19')
         self.declare_parameter('arm_b.port', 8080)
-        self.declare_parameter('arm_s.ip', '192.168.1.20')
-        self.declare_parameter('arm_s.port', 8080)
         self.declare_parameter('namespace', 'robot')
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('sim_joint_tolerance', 0.03)
@@ -646,10 +677,21 @@ class UnifiedArmNode(Node):
             port = self.get_parameter(f'{arm_name}.port').value
             arm_id = arm_name[-1].upper()
 
-            # 获取 base 参数
+            # 获取 base 参数，按 mode 选择对应的 d6_mm
             base_position = list(self.get_parameter(f'{arm_name}.base_position').value)
             base_orientation_deg = list(self.get_parameter(f'{arm_name}.base_orientation_deg').value)
-            d6_mm = self.get_parameter(f'{arm_name}.d6_mm').value
+            d6_key = f'{arm_name}.sim_d6_mm' if mode == 'sim' else f'{arm_name}.real_d6_mm'
+            d6_mm = self.get_parameter(d6_key).value
+
+            # 读取工具坐标系参数并组装为 dict
+            tool_frame = {
+                'name':    self.get_parameter(f'{arm_name}.tool_frame.name').value,
+                'pose':    list(self.get_parameter(f'{arm_name}.tool_frame.pose').value),
+                'payload': self.get_parameter(f'{arm_name}.tool_frame.payload').value,
+                'cx':      self.get_parameter(f'{arm_name}.tool_frame.cx').value,
+                'cy':      self.get_parameter(f'{arm_name}.tool_frame.cy').value,
+                'cz':      self.get_parameter(f'{arm_name}.tool_frame.cz').value,
+            }
 
             bridge = ArmBridge(
                 self, arm_name, mode, ip, port, arm_id,
@@ -658,7 +700,8 @@ class UnifiedArmNode(Node):
                 sim_motion_grace_period=self._sim_motion_grace_period,
                 base_position=base_position,
                 base_orientation_deg=base_orientation_deg,
-                d6_mm=d6_mm)
+                d6_mm=d6_mm,
+                tool_frame=tool_frame)
             if mode == 'sim':
                 bridge.set_publish_target_fn(self._update_and_publish_target)
                 bridge.set_d1_angle_fn(self._get_current_d1)
@@ -683,10 +726,6 @@ class UnifiedArmNode(Node):
             self._init_timer = self.create_timer(0.5, self._publish_initial_zero_position)
         else:
             self._init_timer = None
-
-        # TF发布器：动态发布平台和相机TF
-        self._tf_broadcaster = TransformBroadcaster(self)
-        self._publish_base_tfs()  # 发布基础静态TF
 
         self.get_logger().info('=== UnifiedArmNode 就绪 ===')
 
@@ -932,9 +971,6 @@ class UnifiedArmNode(Node):
             js_msg.name = JOINT_NAMES_LIST
             js_msg.position = merged_positions
             self._merged_joint_states_pub.publish(js_msg)
-
-        # 动态发布相机TF
-        self._publish_camera_tfs()
 
     def destroy_node(self):
         for bridge in self._bridges.values():

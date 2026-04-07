@@ -32,18 +32,15 @@ import numpy as np
 class SDKMotionResult(Enum):
     SUCCESS = 0
     FAILED = 1
-    TIMEOUT = 2
     NOT_CONNECTED = 3
-    IK_FAILED = 4
 
 class RealManAlgo:
     """RealMan 算法库封装 - 使用 RM65Robot 进行 IK/FK 解算
 
     基于 rm65_robot.RM65Robot，支持自定义 base 坐标系，
     纯本地计算，不需要TCP连接。
-    同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos/pose_move）。
+    同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos）。
     """
-
     def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=144):
         """
         初始化算法库
@@ -60,6 +57,7 @@ class RealManAlgo:
         self._base_position = base_position or [0.0, 0.0, 0.0]
         self._base_orientation_deg = base_orientation_deg or [0.0, 0.0, 0.0]
         self._d6_mm = d6_mm
+        self._tool_frame = tool_frame  # dict or None
 
     def initialize(self) -> bool:
         """初始化算法库"""
@@ -74,6 +72,9 @@ class RealManAlgo:
                 d6_mm=self._d6_mm,
             )
             print(f'[Algo] RM65Robot 初始化成功, base_pos={self._base_position}, base_ori={self._base_orientation_deg}')
+
+            # 设置工具坐标系（在 IK/FK 生效前必须调用）
+            self._apply_tool_frame()
 
             # 初始化原始 SDK Algo (用于辅助功能)
             try:
@@ -98,6 +99,26 @@ class RealManAlgo:
         except Exception as e:
             print(f'[Algo] 初始化失败: {e}')
             return False
+
+    def _apply_tool_frame(self):
+        """将 tool_frame 配置注入 RM65Robot 内部的 SDK Algo 实例"""
+        if not self._tool_frame or not self._robot:
+            return
+        try:
+            from Robotic_Arm.rm_robot_interface import rm_frame_t
+            tf = self._tool_frame
+            name    = tf.get('name', '')
+            pose    = list(tf.get('pose', [0.0] * 6))
+            payload = float(tf.get('payload', 0.0))
+            cx      = float(tf.get('cx', 0.0))
+            cy      = float(tf.get('cy', 0.0))
+            cz      = float(tf.get('cz', 0.0))
+            frame = rm_frame_t(name, pose, payload, cx, cy, cz)
+            self._robot._algo.rm_algo_set_toolframe(frame)
+            print(f'[Algo] 工具坐标系已设置: name="{name}" pose={pose} '
+                  f'payload={payload}kg 质心=[{cx},{cy},{cz}]')
+        except Exception as e:
+            print(f'[Algo] 工具坐标系设置失败: {e}')
 
     @property
     def is_ready(self) -> bool:
@@ -203,32 +224,18 @@ class RealManAlgo:
                 print(f'[Algo] matrix2pos异常: {e}')
                 return None
 
-    def pose_move(self, pose: List[float], delta: List[float], mode: int = 1) -> Optional[List[float]]:
-        """位姿叠加 (delta角度单位为度)
-
-        使用原始 SDK Algo 实现"""
-        if not self._initialized or not self._algo:
-            return None
-        with self._lock:
-            try:
-                result = self._algo.rm_algo_pose_move(pose, delta, mode)
-                if isinstance(result, (list, tuple)) and result[0] == 0:
-                    return list(result[1])
-                return None
-            except Exception as e:
-                print(f'[Algo] pose_move异常: {e}')
-                return None
-
     def forward_kinematics(
         self,
         joints_deg: List[float],
         flag: int = 1,
+        T_base_in_world=None,
     ) -> Optional[List[float]]:
         """正运动学解算
 
         Args:
             joints_deg: 关节角度 [j1..j6] (角度制)
             flag: 保留参数，兼容旧接口
+            T_base_in_world: np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 中的变换。
 
         Returns:
             位姿 [x,y,z,rx,ry,rz] (姿态单位为弧度) 或 None
@@ -238,11 +245,8 @@ class RealManAlgo:
 
         with self._lock:
             try:
-                # RM65Robot.forward_kinematics 返回字典:
-                # {'position': [x,y,z], 'euler_deg': [rx,ry,rz], 'euler_rad': [rx,ry,rz]}
-                result = self._robot.forward_kinematics(joints_deg)
+                result = self._robot.forward_kinematics(joints_deg, T_base_in_world)
                 if result is not None:
-                    # 返回 [x,y,z,rx,ry,rz]，姿态单位为弧度
                     return result['position'] + result['euler_rad']
                 return None
             except Exception as e:
@@ -289,14 +293,15 @@ class RealManSDKWrapper:
         self._robot = None
         self._tcp_connected = False
 
-        # Algo: 如果未传入则创建新实例（使用 base 参数）
+        # Algo: 如果未传入则创建新实例（使用 base 参数 + 工具坐标系）
         if algo is not None:
             self._algo = algo
         else:
             self._algo = RealManAlgo(
                 base_position=base_position,
                 base_orientation_deg=base_orientation_deg,
-                d6_mm=d6_mm
+                d6_mm=d6_mm,
+                tool_frame=tool_frame,
             )
 
     @property
@@ -390,25 +395,6 @@ class RealManSDKWrapper:
             print(f'{self._tag} TCP连接异常: {e}')
             return False
 
-    def set_arm_run_mode(self, sim: bool = True) -> bool:
-        """设置机械臂运行模式 (需要TCP连接)
-        Args:
-            sim: True=仿真模式(rm_set_arm_run_mode(1)),
-                 False=真实模式(rm_set_arm_run_mode(0))
-        """
-        if not self._tcp_connected:
-            return False
-        with self._lock:
-            try:
-                mode_val = 1 if sim else 0
-                ret = self._robot.rm_set_arm_run_mode(mode_val)
-                print(f'{self._tag} 设置运行模式: '
-                      f'{"仿真" if sim else "真实"}, ret={ret}')
-                return ret == 0
-            except Exception as e:
-                print(f'{self._tag} 设置运行模式失败: {e}')
-                return False
-
     # ─── IK/FK (通过SDK Algo解算) ───
 
     def inverse_kinematics(
@@ -454,12 +440,13 @@ class RealManSDKWrapper:
         return [math.radians(d) for d in result_deg]
 
     def forward_kinematics(
-        self, joints: List[float]
+        self, joints: List[float], T_base_in_world=None,
     ) -> Optional[dict]:
         """正运动学解算 (SDK Algo)
 
         Args:
             joints: 关节角度 (弧度)
+            T_base_in_world: np.ndarray (4x4), 可选，arm_x_base_link 在 base_link 中的变换。
         Returns:
             {'x','y','z','rx','ry','rz'} 或 None
         """
@@ -468,7 +455,7 @@ class RealManSDKWrapper:
                 return None
 
         joints_deg = [math.degrees(j) for j in joints]
-        result = self._algo.forward_kinematics(joints_deg, flag=1)
+        result = self._algo.forward_kinematics(joints_deg, flag=1, T_base_in_world=T_base_in_world)
         if result is None:
             return None
         return {
