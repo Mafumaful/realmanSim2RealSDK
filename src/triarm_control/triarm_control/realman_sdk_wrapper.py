@@ -41,7 +41,7 @@ class RealManAlgo:
     纯本地计算，不需要TCP连接。
     同时保留原始 SDK Algo 用于辅助功能（pos2matrix/matrix2pos）。
     """
-    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=144):
+    def __init__(self, base_position=None, base_orientation_deg=None, d6_mm=144, tool_frame=None):
         """
         初始化算法库
 
@@ -271,7 +271,8 @@ class RealManSDKWrapper:
                  mode: str = 'real', algo: RealManAlgo = None,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 144):
+                 d6_mm: float = 144,
+                 tool_frame: dict = None):
         """
         Args:
             ip: 机械臂IP地址
