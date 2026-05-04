@@ -116,7 +116,15 @@ unified_arm_node:
       # RM65Robot IK/FK 参数 (单位: m, deg)
       base_position: [0.05457, 0.04863, 0.2273]           # 机械臂base相对转盘的位置
       base_orientation_deg: [45.0, 0.0, 0.0]              # 机械臂base相对转盘的姿态 (ZYX欧拉角)
-      d6_mm: 144                                          # 末端 d6 参数 (RM65-6F)
+      sim_d6_mm: 172.5
+      real_d6_mm: 144.0
+      tool_frame:
+        name: "gripper_a"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        payload: 0.0
+        cx: 0.0
+        cy: 0.0
+        cz: 0.0
     # B臂 (right)
     arm_b:
       ip: "192.168.30.124"
@@ -124,7 +132,15 @@ unified_arm_node:
       # RM65Robot IK/FK 参数 (单位: m, deg)
       base_position: [0.05457, -0.04863, 0.2273]
       base_orientation_deg: [-45.0, 0.0, 0.0]
-      d6_mm: 144
+      sim_d6_mm: 172.5
+      real_d6_mm: 144.0
+      tool_frame:
+        name: "gripper_b"
+        pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        payload: 0.0
+        cx: 0.0
+        cy: 0.0
+        cz: 0.0
     # S臂 (预留)
     arm_s:
       ip: "192.168.1.20"
@@ -132,7 +148,8 @@ unified_arm_node:
       port: 8080
       base_position:        [0.0, 0.0, 0.0]
       base_orientation_deg: [0.0, 0.0, 0.0]
-      d6_mm: 144
+      sim_d6_mm: 172.5
+      real_d6_mm: 144.0
 
 # ============================================================
 # 夹爪桥接节点
@@ -160,10 +177,12 @@ triarm_gui:
     gui_height: 600
     # per-arm base 参数 (与 unified_arm_node 一致, 用于 GUI 内 FK/IK 计算)
     arm_a:
-      base_position: [0.05457, 0.04863, 0.2273] 
-      base_orientation_deg: [45.0, 0.0, 0.0]  
-      d6_mm: 144
+      base_position: [0.05457, 0.04863, 0.2273]
+      base_orientation_deg: [45.0, 0.0, 0.0]
+      sim_d6_mm: 172.5
+      real_d6_mm: 144.0
     arm_b:
       base_position: [0.05457, -0.04863, 0.2273]
       base_orientation_deg: [-45.0, 0.0, 0.0]
-      d6_mm: 144
+      sim_d6_mm: 172.5
+      real_d6_mm: 144.0

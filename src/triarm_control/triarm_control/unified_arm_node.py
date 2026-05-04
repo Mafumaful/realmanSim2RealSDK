@@ -610,13 +610,25 @@ class UnifiedArmNode(Node):
         # Base 参数 (RM65Robot 初始化参数, 单位: m, deg)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 144)
+        self.declare_parameter('arm_a.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_a.real_d6_mm', 144.0)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 144)
+        self.declare_parameter('arm_b.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_b.real_d6_mm', 144.0)
         self.declare_parameter('arm_s.base_position', [0.0, 0.0, 0.0])
         self.declare_parameter('arm_s.base_orientation_deg', [0.0, 0.0, 0.0])
-        self.declare_parameter('arm_s.d6_mm', 144)
+        self.declare_parameter('arm_s.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_s.real_d6_mm', 144.0)
+
+        # 工具坐标系参数
+        for arm in ['arm_a', 'arm_b']:
+            self.declare_parameter(f'{arm}.tool_frame.name', f'gripper_{arm[-1]}')
+            self.declare_parameter(f'{arm}.tool_frame.pose', [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            self.declare_parameter(f'{arm}.tool_frame.payload', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cx', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cy', 0.0)
+            self.declare_parameter(f'{arm}.tool_frame.cz', 0.0)
 
         mode = self.get_parameter('mode').value
         ns = self.get_parameter('namespace').value

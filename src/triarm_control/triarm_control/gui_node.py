@@ -24,7 +24,8 @@ from rm_ros_interfaces.msg import Movel, Movejp, Movej
 from geometry_msgs.msg import Pose
 from .joint_names import JOINT_NAMES_LIST, JOINT_LIMITS, TOTAL_JOINT_COUNT
 from .realman_sdk_wrapper import RealManAlgo
-from .griger import jiazhua_control_l, jiazhua_control_r
+jiazhua_control_l = None
+jiazhua_control_r = None
 
 class JointControlGUI(Node):
     """关节控制GUI节点"""
@@ -43,10 +44,12 @@ class JointControlGUI(Node):
         # per-arm base 参数 (与 unified_arm_node 一致, 用于 RM65Robot IK/FK)
         self.declare_parameter('arm_a.base_position', [0.05457, -0.04863, 0.2273])
         self.declare_parameter('arm_a.base_orientation_deg', [45.0, 90.0, 0.0])
-        self.declare_parameter('arm_a.d6_mm', 144)
+        self.declare_parameter('arm_a.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_a.real_d6_mm', 144.0)
         self.declare_parameter('arm_b.base_position', [-0.04867, -0.05374, 0.2273])
         self.declare_parameter('arm_b.base_orientation_deg', [135.0, 90.0, 0.0])
-        self.declare_parameter('arm_b.d6_mm', 144)
+        self.declare_parameter('arm_b.sim_d6_mm', 172.5)
+        self.declare_parameter('arm_b.real_d6_mm', 144.0)
 
         # 获取参数
         ns = self.get_parameter('namespace').value
@@ -74,8 +77,10 @@ class JointControlGUI(Node):
         # 发布目标位置
         self.target_pub = self.create_publisher(Float64MultiArray, target_topic, 10)
 
-        # Real模式：创建rm_driver发布器
+        # Real模式：创建rm_driver发布器 & 加载夹爪串口驱动
         if self.mode == 'real':
+            global jiazhua_control_l, jiazhua_control_r
+            from .griger import jiazhua_control_l, jiazhua_control_r
             self.movej_pub_a = self.create_publisher(
                 Movej, '/arm_a/rm_driver/movej_cmd', 10)
             self.movej_pub_b = self.create_publisher(
@@ -629,16 +634,20 @@ class JointControlGUI(Node):
             self.status_label.config(text='已发送(Real)', foreground='green')
 
     def close_gripper_right(self):
-        jiazhua_control_r(0)
+        if jiazhua_control_r:
+            jiazhua_control_r(0)
 
     def open_gripper_right(self):
-        jiazhua_control_r(1)
+        if jiazhua_control_r:
+            jiazhua_control_r(1)
 
     def close_gripper_left(self):
-        jiazhua_control_l(0)
+        if jiazhua_control_l:
+            jiazhua_control_l(0)
 
     def open_gripper_left(self):
-        jiazhua_control_l(1)
+        if jiazhua_control_l:
+            jiazhua_control_l(1)
 
     def _send_target_demo(self, joint_sequence=None):
         # if not self.has_state:
