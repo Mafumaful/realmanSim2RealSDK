@@ -34,7 +34,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64, Float64MultiArray
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 from rm_ros_interfaces.msg import Movel, Movej, Movejp
 
 import transforms3d.quaternions as txq
@@ -723,6 +723,9 @@ class UnifiedArmNode(Node):
 
         self.get_logger().info('S臂接口预留，暂未启用')
 
+        # TF 广播器（发布相机等动态 TF）
+        self._tf_broadcaster = TransformBroadcaster(self)
+
         # sim模式: 订阅 /joint_states 获取仿真反馈
         if mode == 'sim':
             self._sim_state_sub = self.create_subscription(
@@ -973,6 +976,8 @@ class UnifiedArmNode(Node):
     def _publish_states(self):
         for bridge in self._bridges.values():
             bridge.publish_state()
+
+        self._publish_camera_tfs()
 
         # real模式: 合并各臂关节状态发布到 robot/joint_states
         if self._mode == 'real':
