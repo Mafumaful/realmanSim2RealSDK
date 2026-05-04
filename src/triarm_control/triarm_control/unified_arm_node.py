@@ -887,61 +887,18 @@ class UnifiedArmNode(Node):
         self._tf_broadcaster.sendTransform(t)
 
     def _publish_camera_tfs(self):
-        """根据当前关节状态发布相机TF（动态更新）"""
+        """发布相机TF"""
         transforms = []
         now = self.get_clock().now().to_msg()
 
-        def _append_wrist_camera_tf(arm_name: str, camera_frame: str):
-            bridge = self._bridges.get(arm_name)
-            if bridge is None:
-                return
-
-            with bridge._lock:
-                pose = bridge._current_pose
-                qx = pose.orientation.x
-                qy = pose.orientation.y
-                qz = pose.orientation.z
-                qw = pose.orientation.w
-                px = pose.position.x
-                py = pose.position.y
-                pz = pose.position.z
-
-            quat_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-            if quat_norm < 1e-6:
-                return
-
-            pose_copy = Pose()
-            pose_copy.position.x = px
-            pose_copy.position.y = py
-            pose_copy.position.z = pz
-            pose_copy.orientation.x = qx
-            pose_copy.orientation.y = qy
-            pose_copy.orientation.z = qz
-            pose_copy.orientation.w = qw
-
-            x, y, z, rx, ry, rz = pose_to_xyzrpy(pose_copy)
+        # 腕部相机：与对应臂 link_6 重合（零偏移）
+        for arm_name, camera_frame in [('arm_a', 'camera_a_link'), ('arm_b', 'camera_b_link')]:
             t = TransformStamped()
             t.header.stamp = now
-            t.header.frame_id = 'platform_link'
+            t.header.frame_id = f'{arm_name}_link_6'
             t.child_frame_id = camera_frame
-            t.transform.translation.x = x
-            t.transform.translation.y = y
-            t.transform.translation.z = z
-            t.transform.rotation.x = qx
-            t.transform.rotation.y = qy
-            t.transform.rotation.z = qz
-            t.transform.rotation.w = qw
+            t.transform.rotation.w = 1.0
             transforms.append(t)
-
-            # self.get_logger().info(
-            #     f'[{arm_name}] 发布腕部相机TF platform_link←{camera_frame}: '
-            #     f'trans=[{x:.3f}, {y:.3f}, {z:.3f}], '
-            #     f'rpy=[{rx:.3f}, {ry:.3f}, {rz:.3f}]',
-            #     throttle_duration_sec=5.0)
-
-        # 腕部相机：直接复用当前末端完整姿态，避免只发布 yaw 导致坐标轴错误
-        _append_wrist_camera_tf('arm_a', 'camera_a_link')
-        _append_wrist_camera_tf('arm_b', 'camera_b_link')
 
         # Link_S6 (S臂末端全局相机) - 使用标定验证后的实际位姿
         # 平移: 相机在 platform_link 下的位置 (由 grasp_test 验证)
