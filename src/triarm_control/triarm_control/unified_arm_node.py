@@ -81,7 +81,8 @@ class ArmBridge:
                  sim_motion_grace_period: float = 8.0,
                  base_position: List[float] = None,
                  base_orientation_deg: List[float] = None,
-                 d6_mm: float = 144):
+                 d6_mm: float = 144,
+                 tool_frame: dict = None):
         self.node = node
         self.arm_name = arm_name
         self.mode = mode

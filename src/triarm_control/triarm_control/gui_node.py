@@ -80,7 +80,10 @@ class JointControlGUI(Node):
         # Real模式：创建rm_driver发布器 & 加载夹爪串口驱动
         if self.mode == 'real':
             global jiazhua_control_l, jiazhua_control_r
-            from .griger import jiazhua_control_l, jiazhua_control_r
+            try:
+                from .griger import jiazhua_control_l, jiazhua_control_r
+            except Exception as e:
+                self.get_logger().warn(f'夹爪串口驱动加载失败，夹爪功能不可用: {e}')
             self.movej_pub_a = self.create_publisher(
                 Movej, '/arm_a/rm_driver/movej_cmd', 10)
             self.movej_pub_b = self.create_publisher(
