@@ -212,6 +212,7 @@ class RM65Robot:
             ),
         )
 
+    def _build_turntable_transform(self):
         """构建转盘坐标系的齐次变换矩阵（绕z轴旋转）"""
         theta = math.radians(self.turntable_angle_deg)
         c, s = math.cos(theta), math.sin(theta)
