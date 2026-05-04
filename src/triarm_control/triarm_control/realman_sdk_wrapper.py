@@ -515,7 +515,7 @@ class RealManSDKWrapper:
             try:
                 joints_deg = [math.degrees(j) for j in joints]
                 ret = self._robot.rm_movej(
-                    joints_deg, speed, 0, 0, block)
+                    joints_deg, speed, 0, 0, False)
                 if ret == 0:
                     return SDKMotionResult.SUCCESS
                 print(f'{self._tag} MoveJ失败: ret={ret}')
@@ -539,7 +539,7 @@ class RealManSDKWrapper:
             try:
                 pose = [x, y, z, rx, ry, rz]
                 ret = self._robot.rm_movel(
-                    pose, speed, 0, 0, block)
+                    pose, speed, 0, 0, False)
                 if ret == 0:
                     return SDKMotionResult.SUCCESS
                 print(f'{self._tag} MoveL失败: ret={ret}')
@@ -558,7 +558,7 @@ class RealManSDKWrapper:
             try:
                 pose = [x, y, z, rx, ry, rz]
                 ret = self._robot.rm_movej_p(
-                    pose, speed, 0, 0, block)
+                    pose, speed, 0, 0, False)
                 if ret == 0:
                     return SDKMotionResult.SUCCESS
                 print(f'{self._tag} MoveJP失败: ret={ret}')
