@@ -269,6 +269,8 @@ class RM65Robot:
             rz = 0.0
         return rx, ry, rz
 
+    _rot_to_euler_xyz = _rot_to_euler_zyx
+
     def _pose_to_transform(self, pose):
         """位姿 [x,y,z,rx,ry,rz] → 齐次变换矩阵
 
