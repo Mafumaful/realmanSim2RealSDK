@@ -959,6 +959,14 @@ class UnifiedArmNode(Node):
         t.transform.rotation.w = float(q[0])
         transforms.append(t)
 
+        # camera_m_color_optical_frame 与 Link_S6 重合（零偏移）
+        t_cam = TransformStamped()
+        t_cam.header.stamp = now
+        t_cam.header.frame_id = 'Link_S6'
+        t_cam.child_frame_id = 'camera_m_color_optical_frame'
+        t_cam.transform.rotation.w = 1.0
+        transforms.append(t_cam)
+
         if transforms:
             self._tf_broadcaster.sendTransform(transforms)
 
