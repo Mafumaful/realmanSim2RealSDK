@@ -26,7 +26,7 @@ tf_publisher_node:
 
     # ── 臂参数（从全局继承）──
     arm_a:
-      base_position:        [0.04867, 0.05374, 0.2273]
+      base_position:        [0.05127, 0.05127, 0.24]
       base_orientation_deg: [0.0, 0.0, 45.0]
       sim_d6_mm:  172.5
       real_d6_mm: 144.0
@@ -38,7 +38,7 @@ tf_publisher_node:
         cy: 0.0
         cz: 0.0
     arm_b:
-      base_position:        [0.05457, -0.04863, 0.2273]
+      base_position:        [0.05127, -0.05127, 0.24]
       base_orientation_deg: [0.0, 0.0, -45.0]
       sim_d6_mm:  172.5
       real_d6_mm: 144.0
