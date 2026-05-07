@@ -62,7 +62,7 @@ tf_publisher_node:
     turntable:
       parent: "platform_link"
       child:  "turntable_link"
-      axis_sign: -1   # 1=同向, -1=反向（D1 轴方向与 TF Rz 的符号关系）
+      axis_sign: 1   # 1=同向, -1=反向（D1 轴方向与 TF Rz 的符号关系）
 
     # ── 腕部相机配置 ──
     # 相机挂在机械臂末端 arm_x_link_6 上，end_to_camera 为末端→相机的静态偏移
@@ -78,7 +78,8 @@ tf_publisher_node:
     center_camera:
       parent: "turntable_link"
       child:  "center_camera_link"
-      xyzrpy: [0.42478, 0.0, 0.6, -179.952, -4.66, 90.49]
+      # xyzrpy: [0.42478, 0.0, 0.6, -179.952, -40.66, 90.49]
+      xyzrpy: [0.42478, 0.0, 0.6, 45.0, 180.0, 90.0]
 
 # ============================================================
 # 关节插值控制节点
